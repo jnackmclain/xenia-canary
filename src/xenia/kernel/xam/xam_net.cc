@@ -722,7 +722,7 @@ dword_result_t NetDll_getsockopt_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
-  int native_len = *optlen;
+  uint32_t native_len = *optlen;
   X_STATUS status = socket->GetOption(level, optname, optval_ptr, &native_len);
   return XSUCCEEDED(status) ? 0 : -1;
 }
@@ -1083,8 +1083,8 @@ dword_result_t NetDll_XNetRegisterKey_entry(dword_t caller, lpdword_t key_id,
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetRegisterKey, kNetworking, kStub);
 
-dword_result_t NetDll_XNetUnregisterKey_entry(dword_t caller, lpdword_t key_id,
-                                              lpdword_t exchange_key) {
+dword_result_t NetDll_XNetUnregisterKey_entry(dword_t caller,
+                                              lpdword_t key_id) {
   return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetUnregisterKey, kNetworking, kStub);

@@ -505,6 +505,7 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
     return FileSignatureType::XISO;
   }
 
+  XELOGE("{}: {} ({:08X})", __func__, path.extension(), magic_value);
   return FileSignatureType::Unknown;
 }
 
@@ -1369,6 +1370,12 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   if (!module) {
     XELOGE("Failed to load user module {}", path);
     return X_STATUS_NOT_FOUND;
+  }
+
+  if (!module->is_executable()) {
+    kernel_state_->UnloadUserModule(module, false);
+    XELOGE("Failed to load user module {}", path);
+    return X_STATUS_NOT_SUPPORTED;
   }
 
   X_RESULT result = kernel_state_->ApplyTitleUpdate(module);

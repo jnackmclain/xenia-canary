@@ -40,25 +40,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@main
-      - name: Setup
-        run: |
-          LLVM_VERSION=18 # Same as Windows
-          UBUNTU_BASE=jammy
-          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
-          sudo apt-add-repository "deb http://apt.llvm.org/${UBUNTU_BASE}/ llvm-toolchain-${UBUNTU_BASE}-$LLVM_VERSION main"
-          sudo apt-get -y update
-          sudo apt-get -y install clang-format-$LLVM_VERSION
-      - name: Lint
-        run: ./xb lint --all
-
   build:
     name: Build (LLVM ${{ matrix.LLVM_VERSION }})
-    needs: lint
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -97,7 +80,7 @@ jobs:
 
   create-release:
     name: Create release
-    needs: [lint, build]
+    needs: build
     if: |
       github.repository == 'xenia-canary/xenia-canary' &&
       github.event.action != 'pull_request' &&

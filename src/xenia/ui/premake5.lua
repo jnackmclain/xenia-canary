@@ -9,18 +9,16 @@ project("xenia-ui")
   links({
     "xenia-base",
   })
-  defines({
-  })
   local_platform_files()
-  removefiles({"*_demo.cc"})
-  removefiles({"windowed_app_main_*.cc"})
---  filter({"configurations:Release", "platforms:Windows"})
---    buildoptions({
---      "/O1",
---    })
-  filter("platforms:Android-*")
-    -- Exports JNI functions.
-    wholelib("On")
+  removefiles({
+    "*_demo.cc",
+    "windowed_app_main_*.cc",
+  })
+  if os.istarget("android") then
+    filter("platforms:Android-*")
+      -- Exports JNI functions.
+      wholelib("On")
+  end
 
   filter("platforms:Windows")
     links({

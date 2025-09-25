@@ -8,10 +8,7 @@
  */
 
 #include "xenia/gpu/d3d12/d3d12_command_processor.h"
-#include <algorithm>
 #include <cstring>
-#include <sstream>
-#include <utility>
 #include "xenia/base/assert.h"
 #include "xenia/base/byte_order.h"
 #include "xenia/base/cvar.h"
@@ -810,7 +807,7 @@ bool D3D12CommandProcessor::SetupContext() {
   ID3D12Device* device = provider.GetDevice();
   ID3D12CommandQueue* direct_queue = provider.GetDirectQueue();
 
-  fence_completion_event_ = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+  fence_completion_event_ = CreateEvent(nullptr, false, false, nullptr);
   if (fence_completion_event_ == nullptr) {
     XELOGE("Failed to create the fence completion event");
     return false;
@@ -2527,15 +2524,15 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                       uint32_t index_count,
                                       IndexBufferInfo* index_buffer_info,
                                       bool major_mode_explicit) {
-#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   ID3D12Device* device = GetD3D12Provider().GetDevice();
   const RegisterFile& regs = *register_file_;
 
-  xenos::ModeControl edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
-  if (edram_mode == xenos::ModeControl::kCopy) {
+  xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
+  if (edram_mode == xenos::EdramMode::kCopy) {
     // Special copy handling.
     return IssueCopy();
   }
@@ -2563,9 +2560,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       draw_util::IsRasterizationPotentiallyDone(regs, primitive_polygonal);
   D3D12Shader* pixel_shader = nullptr;
   if (is_rasterization_done) {
-    // See xenos::ModeControl for explanation why the pixel shader is only used
+    // See xenos::EdramMode for explanation why the pixel shader is only used
     // when it's kColorDepth here.
-    if (edram_mode == xenos::ModeControl::kColorDepth) {
+    if (edram_mode == xenos::EdramMode::kColorDepth) {
       pixel_shader = static_cast<D3D12Shader*>(active_pixel_shader());
       if (pixel_shader) {
         pipeline_cache_->AnalyzeShaderUcode(*pixel_shader);
@@ -3064,9 +3061,9 @@ void D3D12CommandProcessor::InitializeTrace() {
 }
 
 bool D3D12CommandProcessor::IssueCopy() {
-#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
   if (!BeginSubmission(true)) {
     return false;
   }
@@ -3134,7 +3131,8 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
               queue_operations_since_submission_fence_, fence_value)) &&
           SUCCEEDED(
               queue_operations_since_submission_fence_->SetEventOnCompletion(
-                  fence_value, nullptr))) {
+                  fence_value, fence_completion_event_))) {
+        WaitForSingleObject(fence_completion_event_, INFINITE);
         queue_operations_done_since_submission_signal_ = false;
       } else {
         XELOGE(
@@ -3150,8 +3148,9 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
   uint64_t submission_completed_before = submission_completed_;
   submission_completed_ = submission_fence_->GetCompletedValue();
   if (submission_completed_ < await_submission) {
-    if (SUCCEEDED(submission_fence_->SetEventOnCompletion(await_submission,
-                                                          nullptr))) {
+    if (SUCCEEDED(submission_fence_->SetEventOnCompletion(
+            await_submission, fence_completion_event_))) {
+      WaitForSingleObject(fence_completion_event_, INFINITE);
       submission_completed_ = submission_fence_->GetCompletedValue();
     }
   }
@@ -3214,9 +3213,9 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
 }
 
 bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
-#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   if (device_removed_) {
     return false;
@@ -3507,9 +3506,9 @@ void D3D12CommandProcessor::UpdateFixedFunctionState(
     const draw_util::ViewportInfo& viewport_info,
     const draw_util::Scissor& scissor, bool primitive_polygonal,
     reg::RB_DEPTHCONTROL normalized_depth_control) {
-#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   // Viewport.
   D3D12_VIEWPORT viewport;
@@ -4203,9 +4202,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
   ID3D12Device* device = provider.GetDevice();
   const RegisterFile& regs = *register_file_;
 
-#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   // Set the new root signature.
   if (current_graphics_root_signature_ != root_signature) {

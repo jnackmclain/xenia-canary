@@ -10,32 +10,28 @@
 #ifndef XENIA_KERNEL_KERNEL_STATE_H_
 #define XENIA_KERNEL_KERNEL_STATE_H_
 
-#include <atomic>
 #include <bitset>
 #include <condition_variable>
 #include <functional>
 #include <list>
-#include <memory>
 #include <vector>
 
 #include "xenia/base/bit_map.h"
-#include "xenia/base/cvar.h"
-#include "xenia/base/mutex.h"
 #include "xenia/cpu/backend/backend.h"
 #include "xenia/cpu/export_resolver.h"
+#include "xenia/kernel/kernel.h"
+#include "xenia/kernel/smc.h"
 #include "xenia/kernel/util/kernel_fwd.h"
 #include "xenia/kernel/util/native_list.h"
 #include "xenia/kernel/util/object_table.h"
-#include "xenia/kernel/util/xdbf_utils.h"
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/app_manager.h"
 #include "xenia/kernel/xam/content_manager.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xevent.h"
-#include "xenia/memory.h"
 #include "xenia/vfs/virtual_file_system.h"
-#include "xenia/xbox.h"
 
 namespace xe {
 class ByteStream;
@@ -62,7 +58,8 @@ struct X_KPROCESS {
   // list of threads in this process, guarded by the spinlock above
   X_LIST_ENTRY thread_list;
 
-  xe::be<uint32_t> unk_0C;
+  // quantum value assigned to each thread of the process
+  xe::be<int32_t> quantum;
   // kernel sets this to point to a section of size 0x2F700 called CLRDATAA,
   // except it clears bit 31 of the pointer. in 17559 the address is 0x801C0000,
   // so it sets this ptr to 0x1C0000
@@ -183,11 +180,13 @@ class KernelState {
   vfs::VirtualFileSystem* file_system() const { return file_system_; }
 
   uint32_t title_id() const;
-  static bool is_title_system_type(uint32_t title_id);
-  util::XdbfGameData title_xdbf() const;
-  util::XdbfGameData module_xdbf(object_ref<UserModule> exec_module) const;
+  const std::unique_ptr<xam::SpaInfo> title_xdbf() const;
+  const std::unique_ptr<xam::SpaInfo> module_xdbf(
+      object_ref<UserModule> exec_module) const;
 
   xam::XamState* xam_state() const { return xam_state_.get(); }
+
+  SystemManagementController* smc() const { return smc_.get(); }
 
   xam::AchievementManager* achievement_manager() const {
     return xam_state()->achievement_manager();
@@ -227,6 +226,7 @@ class KernelState {
   bool RegisterUserModule(object_ref<UserModule> module);
   void UnregisterUserModule(UserModule* module);
   bool IsKernelModule(const std::string_view name);
+  bool IsModuleLoaded(const std::string_view name);
   object_ref<XModule> GetModule(const std::string_view name,
                                 bool user_only = false);
 
@@ -266,6 +266,7 @@ class KernelState {
   void OnThreadExecute(XThread* thread);
   void OnThreadExit(XThread* thread);
   object_ref<XThread> GetThreadByID(uint32_t thread_id);
+  std::vector<uint32_t> GetAllThreadIDs();
 
   void RegisterNotifyListener(XNotifyListener* listener);
   void UnregisterNotifyListener(XNotifyListener* listener);
@@ -304,7 +305,7 @@ class KernelState {
   bool Restore(ByteStream* stream);
 
   uint32_t notification_position_ = 2;
-  XDeploymentType deployment_type_ = XDeploymentType::kUnknown;
+  XDeploymentType deployment_type_ = XDeploymentType::kOther;
 
   uint32_t GetKeTimestampBundle();
 
@@ -346,6 +347,7 @@ class KernelState {
   cpu::Processor* processor_;
   vfs::VirtualFileSystem* file_system_;
   std::unique_ptr<xam::XamState> xam_state_;
+  std::unique_ptr<SystemManagementController> smc_;
 
   KernelVersion kernel_version_;
 
@@ -356,6 +358,7 @@ class KernelState {
   std::unordered_map<uint32_t, XThread*> threads_by_id_;
   std::vector<object_ref<XNotifyListener>> notify_listeners_;
   bool has_notified_startup_ = false;
+  bool has_notified_live_startup_ = false;
 
   object_ref<UserModule> executable_module_;
   std::vector<object_ref<KernelModule>> kernel_modules_;

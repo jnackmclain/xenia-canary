@@ -34,7 +34,7 @@ class Emulator;
 namespace xe {
 namespace gpu {
 
-static const std::vector<std::pair<uint16_t, uint16_t>>
+inline const std::vector<std::pair<uint16_t, uint16_t>>
     internal_display_resolution_entries = {
         {640, 480},  {640, 576},   {720, 480},  {720, 576},  {800, 600},
         {848, 480},  {1024, 768},  {1152, 864}, {1280, 720}, {1280, 768},
@@ -58,7 +58,7 @@ class GraphicsSystem {
   virtual X_STATUS Setup(cpu::Processor* processor,
                          kernel::KernelState* kernel_state,
                          ui::WindowedAppContext* app_context,
-                         bool is_surface_required);
+                         bool with_presentation);
   virtual void Shutdown();
 
   // May be called from any thread any number of times, even during recovery

@@ -1,11 +1,22 @@
 include("tools/build")
-require("third_party/premake-export-compile-commands/export-compile-commands")
-require("third_party/premake-androidndk/androidndk")
-require("third_party/premake-cmake/cmake")
+if _ACTION == "export-compile-commands" then
+  require("third_party/premake-export-compile-commands/export-compile-commands")
+end
+if os.istarget("android") then
+  require("third_party/premake-androidndk/androidndk")
+end
+if _ACTION == "cmake" then
+  require("third_party/premake-cmake/cmake")
+end
 
 location(build_root)
 targetdir(build_bin)
 objdir(build_obj)
+
+-- Define variables for enabling specific submodules
+-- Todo: Add changing from xb command
+enableTests = false
+enableMiscSubprojects = false
 
 -- Define an ARCH variable
 -- Only use this to enable architecture-specific functionality.
@@ -22,14 +33,19 @@ includedirs({
 })
 
 defines({
-  "_UNICODE",
-  "UNICODE",
+  "VULKAN_HPP_NO_TO_STRING",
+  "IMGUI_DISABLE_OBSOLETE_FUNCTIONS",
+  "IMGUI_DISABLE_DEFAULT_FONT",
+  --"IMGUI_USE_WCHAR32",
+  "IMGUI_USE_STB_SPRINTF",
+  --"IMGUI_ENABLE_FREETYPE",
+  "USE_CPP17", -- Tabulate
 })
 
+cdialect("C17")
 cppdialect("C++20")
-exceptionhandling("On")
-rtti("On")
 symbols("On")
+fatalwarnings("All")
 
 -- TODO(DrChat): Find a way to disable this on other architectures.
 if ARCH ~= "ppc64" then
@@ -37,11 +53,6 @@ if ARCH ~= "ppc64" then
     vectorextensions("AVX")
   filter({})
 end
-
-characterset("Unicode")
-flags({
-  "FatalWarnings",        -- Treat warnings as errors.
-})
 
 filter("kind:StaticLib")
   defines({
@@ -58,19 +69,19 @@ filter("configurations:Checked")
   defines({
     "DEBUG",
   })
-filter({"configurations:Checked", "platforms:Windows"})
+
+filter({"configurations:Checked", "platforms:Windows"}) -- "toolset:msc"
   buildoptions({
     "/RTCsu",           -- Full Run-Time Checks.
   })
-filter({"configurations:Checked", "platforms:Linux"})
+
+filter({"configurations:Checked or Debug", "platforms:Linux"})
   defines({
     "_GLIBCXX_DEBUG",   -- libstdc++ debug mode
   })
-filter({"configurations:Release", "platforms:Windows"})
-  buildoptions({
-    "/Gw",
-    "/Ob3",
-  })
+
+filter({"configurations:Checked or Debug", "platforms:Windows"}) -- "toolset:msc"
+  symbols("Full")
 
 filter("configurations:Debug")
   runtime("Release")
@@ -78,10 +89,6 @@ filter("configurations:Debug")
   defines({
     "DEBUG",
     "_NO_DEBUG_HEAP=1",
-  })
-filter({"configurations:Debug", "platforms:Linux"})
-  defines({
-    "_GLIBCXX_DEBUG",   -- make dbg symbols work on some distros
   })
 
 filter("configurations:Release")
@@ -91,23 +98,36 @@ filter("configurations:Release")
     "_NO_DEBUG_HEAP=1",
   })
   optimize("Speed")
-  inlining("Auto")
   flags({
-    "LinkTimeOptimization",
-    "NoBufferSecurityCheck",
+    "NoBufferSecurityCheck"
   })
+  inlining("Auto")
+  editandcontinue("Off")
   -- Not using floatingpoint("Fast") - NaN checks are used in some places
   -- (though rarely), overall preferable to avoid any functional differences
   -- between debug and release builds, and to have calculations involved in GPU
   -- (especially anything that may affect vertex position invariance) and CPU
   -- (such as constant propagation) emulation as predictable as possible,
   -- including handling of specials since games make assumptions about them.
+
+filter({"configurations:Release", "platforms:not Windows"})
+  symbols("Off")
+
+filter({"configurations:Release", "platforms:Windows"}) -- "toolset:msc"
+  linktimeoptimization("On")
+  buildoptions({
+    "/Gw",
+    "/Ob3",
+--    "/Qpar",   -- TODO: Test this.
+  })
+
 filter("platforms:Linux")
   system("linux")
   toolset("clang")
-  buildoptions({
-    -- "-mlzcnt",  -- (don't) Assume lzcnt is supported.
-  })
+  vectorextensions("AVX2")
+  --buildoptions({
+  --    "-mlzcnt",   -- (don't) Assume lzcnt is supported.
+  --})
   pkg_config.all("gtk+-x11-3.0")
   links({
     "stdc++fs",
@@ -117,21 +137,26 @@ filter("platforms:Linux")
     "rt",
   })
 
-filter({"platforms:Linux"})
-  vectorextensions("AVX2")
-
 filter({"platforms:Linux", "kind:*App"})
   linkgroups("On")
 
-filter({"platforms:Linux", "language:C++", "toolset:gcc"})
+filter({"language:C++", "toolset:clang or gcc"}) -- "platforms:Linux"
   disablewarnings({
-    "unused-result",
-    "deprecated-volatile",
     "switch",
-    "deprecated-enum-enum-conversion",
+    "attributes",
   })
 
-filter({"platforms:Linux", "toolset:gcc"})
+filter({"language:C++", "toolset:gcc"}) -- "platforms:Linux"
+  disablewarnings({
+    "unused-result",
+    "volatile",
+    "template-id-cdtor",
+    "return-type",
+    "deprecated",
+  })
+
+filter("toolset:gcc") -- "platforms:Linux"
+  removefatalwarnings("All") -- HACK
   if ARCH == "ppc64" then
     buildoptions({
       "-m32",
@@ -141,61 +166,67 @@ filter({"platforms:Linux", "toolset:gcc"})
       "-m32",
       "-mpowerpc64"
     })
+  else
+    buildoptions({
+      "-fpermissive", -- HACK
+    })
+    linkoptions({
+      "-fpermissive", -- HACK
+    })
   end
 
-filter({"platforms:Linux", "language:C++", "toolset:clang"})
+filter({"language:C++", "toolset:clang"}) -- "platforms:Linux"
   disablewarnings({
     "deprecated-register",
     "deprecated-volatile",
-    "switch",
     "deprecated-enum-enum-conversion",
-    "attributes",
   })
-  removeflags({
-    "FatalWarnings"
-  })
-filter({"platforms:Linux", "language:C++", "toolset:clang", "files:*.cc or *.cpp"})
-  buildoptions({
-    "-stdlib=libstdc++",
-    "-std=c++20", -- clang doesn't respect cppdialect(?)
+CLANG_BIN = os.getenv("CC") or _OPTIONS["cc"] or "clang"
+if os.istarget("linux") and string.contains(CLANG_BIN, "clang") then
+  if tonumber(string.match(os.outputof(CLANG_BIN.." --version"), "version (%d%d)")) >= 20 then
+    filter({"language:C++", "toolset:clang"}) -- "platforms:Linux"
+      disablewarnings({
+        "deprecated-literal-operator",   -- Needed only for tabulate
+        "nontrivial-memcall",
+      })
+  end
+end
+
+filter({"language:C", "toolset:clang or gcc"}) -- "platforms:Linux"
+  disablewarnings({
+    "implicit-function-declaration",
   })
 
-filter("platforms:Android-*")
-  system("android")
-  systemversion("24")
-  cppstl("c++")
-  staticruntime("On")
-  -- Hidden visibility is needed to prevent dynamic relocations in FFmpeg
-  -- AArch64 Neon libavcodec assembly with PIC (accesses extern lookup tables
-  -- using `adrp` and `add`, without the Global Object Table, expecting that all
-  -- FFmpeg symbols that aren't a part of the FFmpeg API are hidden by FFmpeg's
-  -- original build system) by resolving those relocations at link time instead.
-  visibility("Hidden")
-  links({
-    "android",
-    "dl",
-    "log",
-  })
+if os.istarget("android") then
+  filter("platforms:Android-*")
+    system("android")
+    systemversion("24")
+    cppstl("c++")
+    staticruntime("On")
+    -- Hidden visibility is needed to prevent dynamic relocations in FFmpeg
+    -- AArch64 Neon libavcodec assembly with PIC (accesses extern lookup tables
+    -- using `adrp` and `add`, without the Global Object Table, expecting that all
+    -- FFmpeg symbols that aren't a part of the FFmpeg API are hidden by FFmpeg's
+    -- original build system) by resolving those relocations at link time instead.
+    visibility("Hidden")
+    links({
+      "android",
+      "dl",
+      "log",
+    })
+end
 
 filter("platforms:Windows")
   system("windows")
   toolset("msc")
   buildoptions({
     "/utf-8",   -- 'build correctly on systems with non-Latin codepages'.
-    -- Mark warnings as severe
-    "/w14839",  -- non-standard use of class 'type' as an argument to a variadic function
-    "/w14840",  -- non-portable use of class 'type' as an argument to a variadic function
     -- Disable warnings
-    "/wd4100",  -- Unreferenced parameters are ok.
-    "/wd4201",  -- Nameless struct/unions are ok.
-    "/wd4512",  -- 'assignment operator was implicitly defined as deleted'.
-    "/wd4127",  -- 'conditional expression is constant'.
-    "/wd4324",  -- 'structure was padded due to alignment specifier'.
-    "/wd4189",  -- 'local variable is initialized but not referenced'.
+    "/wd4201",   -- Nameless struct/unions are ok.
   })
   flags({
-    "MultiProcessorCompile",  -- Multiprocessor compilation.
-    "NoMinimalRebuild",       -- Required for /MP above.
+    "MultiProcessorCompile",   -- Multiprocessor compilation.
+    "NoMinimalRebuild",        -- Required for /MP above.
   })
 
   defines({
@@ -256,10 +287,7 @@ workspace("xenia")
       -- 10.0.15063.0: ID3D12GraphicsCommandList1::SetSamplePositions.
       -- 10.0.19041.0: D3D12_HEAP_FLAG_CREATE_NOT_ZEROED.
       -- 10.0.22000.0: DWMWA_WINDOW_CORNER_PREFERENCE.
-      filter("action:vs2017")
-        systemversion("10.0.22000.0")
-      filter("action:vs2019")
-        systemversion("10.0")
+      systemversion("latest")
       filter({})
     end
   end
@@ -280,8 +308,12 @@ workspace("xenia")
   include("third_party/xxhash.lua")
   include("third_party/zarchive.lua")
   include("third_party/zstd.lua")
-  include("third_party/zlib.lua")
+  include("third_party/zlib-ng.lua")
   include("third_party/pugixml.lua")
+
+  if os.istarget("windows") then
+    include("third_party/libusb.lua")
+  end
 
   if not os.istarget("android") then
     -- SDL2 requires sdl2-config, and as of November 2020 isn't high-quality on
@@ -300,9 +332,7 @@ workspace("xenia")
     removefiles({
       "src/xenia/base/app_win32.manifest"
     })
-    removeflags({
-      "FatalWarnings",
-    })
+    removefatalwarnings("All")
   end
 
   include("src/xenia")
@@ -319,6 +349,7 @@ workspace("xenia")
   include("src/xenia/gpu/vulkan")
   include("src/xenia/hid")
   include("src/xenia/hid/nop")
+  include("src/xenia/hid/skylander")
   include("src/xenia/kernel")
   include("src/xenia/patcher")
   include("src/xenia/ui")

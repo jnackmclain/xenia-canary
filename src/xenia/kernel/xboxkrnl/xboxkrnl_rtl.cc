@@ -7,24 +7,19 @@
  ******************************************************************************
  */
 
+#include <cwctype>
+
 #include "xenia/kernel/xboxkrnl/xboxkrnl_rtl.h"
 
-#include <algorithm>
-#include <string>
-
-#include "third_party/pe/pe_image.h"
 #include "xenia/base/atomic.h"
-#include "xenia/base/chrono.h"
-#include "xenia/base/logging.h"
-#include "xenia/base/string.h"
-#include "xenia/base/threading.h"
+#include "xenia/base/pe_image.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
-#include "xenia/kernel/xevent.h"
 #include "xenia/kernel/xthread.h"
+
 namespace xe {
 namespace kernel {
 namespace xboxkrnl {
@@ -399,8 +394,13 @@ dword_result_t RtlUnicodeToMultiByteN_entry(pointer_t<uint8_t> destination_ptr,
 DECLARE_XBOXKRNL_EXPORT3(RtlUnicodeToMultiByteN, kNone, kImplemented,
                          kHighFrequency, kSketchy);
 
+dword_result_t RtlDowncaseUnicodeChar_entry(word_t unicode_char) {
+  return std::towlower(unicode_char);
+}
+DECLARE_XBOXKRNL_EXPORT1(RtlDowncaseUnicodeChar, kNone, kImplemented);
+
 // https://undocumented.ntinternals.net/UserMode/Undocumented%20Functions/Executable%20Images/RtlImageNtHeader.html
-static IMAGE_NT_HEADERS32* ImageNtHeader(uint8_t* module) {
+static XIMAGE_NT_HEADERS32* ImageNtHeader(uint8_t* module) {
   if (!module) {
     return 0;
   }
@@ -419,7 +419,7 @@ static IMAGE_NT_HEADERS32* ImageNtHeader(uint8_t* module) {
   if (nt_magic != 0x4550) {  // 'PE'
     return 0;
   }
-  return reinterpret_cast<IMAGE_NT_HEADERS32*>(nt_header);
+  return reinterpret_cast<XIMAGE_NT_HEADERS32*>(nt_header);
 }
 
 pointer_result_t RtlImageNtHeader_entry(lpvoid_t module) {
@@ -443,13 +443,13 @@ dword_result_t RtlImageDirectoryEntryToData_entry(dword_t Base,
     aligned_base = Base & 0xFFFFFFFE;
     MappedAsImage = false;
   }
-  IMAGE_NT_HEADERS32* nt_header =
+  XIMAGE_NT_HEADERS32* nt_header =
       ImageNtHeader(ctx->TranslateVirtual<uint8_t*>(aligned_base));
 
   if (!nt_header) {
     return 0;
   }
-  if (nt_header->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+  if (nt_header->OptionalHeader.Magic != XIMAGE_NT_OPTIONAL_HDR32_MAGIC) {
     return 0;
   }
   if (DirectoryEntry >= nt_header->OptionalHeader.NumberOfRvaAndSizes) {
@@ -468,7 +468,7 @@ dword_result_t RtlImageDirectoryEntryToData_entry(dword_t Base,
   }
 
   uint32_t n_sections = nt_header->FileHeader.NumberOfSections;
-  IMAGE_SECTION_HEADER* v8 = reinterpret_cast<IMAGE_SECTION_HEADER*>(
+  XIMAGE_SECTION_HEADER* v8 = reinterpret_cast<XIMAGE_SECTION_HEADER*>(
       reinterpret_cast<char*>(&nt_header->OptionalHeader) +
       nt_header->FileHeader.SizeOfOptionalHeader);
   if (!n_sections) {

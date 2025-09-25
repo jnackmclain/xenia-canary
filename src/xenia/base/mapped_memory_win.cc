@@ -7,9 +7,7 @@
  ******************************************************************************
  */
 
-#include <memory>
 #include <mutex>
-#include <vector>
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/logging.h"
@@ -29,7 +27,7 @@ class Win32MappedMemory : public MappedMemory {
  public:
   // CreateFile returns INVALID_HANDLE_VALUE in case of failure.
   // chrispy: made inline const to get around clang error
-  static inline const HANDLE kFileHandleInvalid = INVALID_HANDLE_VALUE;
+  static inline constexpr HANDLE kFileHandleInvalid = INVALID_HANDLE_VALUE;
   // CreateFileMapping returns nullptr in case of failure.
   static constexpr HANDLE kMappingHandleInvalid = nullptr;
 

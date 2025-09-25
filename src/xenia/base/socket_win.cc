@@ -10,7 +10,6 @@
 #include "xenia/base/socket.h"
 
 #include <mutex>
-#include <thread>
 
 #include "xenia/base/logging.h"
 #include "xenia/base/platform_win.h"
@@ -96,7 +95,7 @@ class Win32Socket : public Socket {
 
     // Keepalive for a looong time, as we may be paused by the debugger/etc.
     struct tcp_keepalive alive;
-    alive.onoff = TRUE;
+    alive.onoff = true;
     alive.keepalivetime = 7200000;
     alive.keepaliveinterval = 6000;
     DWORD bytes_returned;
@@ -209,7 +208,7 @@ class Win32SocketServer : public SocketServer {
       SOCKET socket = socket_;
       socket_ = INVALID_SOCKET;
       linger so_linger;
-      so_linger.l_onoff = TRUE;
+      so_linger.l_onoff = true;
       so_linger.l_linger = 30;
       setsockopt(socket, SOL_SOCKET, SO_LINGER,
                  reinterpret_cast<const char*>(&so_linger), sizeof(so_linger));
@@ -231,7 +230,7 @@ class Win32SocketServer : public SocketServer {
       return false;
     }
     struct tcp_keepalive alive;
-    alive.onoff = TRUE;
+    alive.onoff = true;
     alive.keepalivetime = 7200000;
     alive.keepaliveinterval = 6000;
     DWORD bytes_returned;

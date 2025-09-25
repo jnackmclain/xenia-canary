@@ -9,17 +9,11 @@
 
 #include "xenia/kernel/user_module.h"
 
-#include <vector>
-
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/xxhash.h"
 #include "xenia/cpu/elf_module.h"
-#include "xenia/cpu/processor.h"
-#include "xenia/cpu/xex_module.h"
 #include "xenia/emulator.h"
-#include "xenia/kernel/xfile.h"
-#include "xenia/kernel/xthread.h"
 
 namespace xe {
 namespace kernel {
@@ -39,6 +33,22 @@ uint32_t UserModule::title_id() const {
     return static_cast<uint32_t>(opt_exec_info->title_id);
   }
   return 0;
+}
+
+std::string UserModule::bounding_filename() const {
+  std::string bounding_filename = "";
+
+  if (module_format_ != kModuleFormatXex) {
+    return bounding_filename;
+  }
+
+  xex2_opt_bound_path* bounding_path = nullptr;
+  if (xex_module()->GetOptHeader(XEX_HEADER_BOUNDING_PATH, &bounding_path)) {
+    bounding_filename =
+        utf8::find_base_name_from_guest_path(std::string(bounding_path->path));
+  }
+
+  return bounding_filename;
 }
 
 uint32_t UserModule::disc_number() const {
@@ -102,7 +112,8 @@ X_STATUS UserModule::LoadFromFile(const std::string_view path) {
     // Read entire file into memory.
     // Ugh.
     size_t bytes_read = 0;
-    result = file->ReadSync(buffer.data(), buffer.size(), 0, &bytes_read);
+    result = file->ReadSync(std::span<uint8_t>(buffer.data(), buffer.size()), 0,
+                            &bytes_read);
     if (XFAILED(result)) {
       return result;
     }
@@ -614,6 +625,12 @@ void UserModule::Dump() {
       case XEX_HEADER_SYSTEM_FLAGS: {
         sb.AppendFormat("  XEX_HEADER_SYSTEM_FLAGS: {:08X}\n",
                         static_cast<uint32_t>(opt_header.value));
+
+        for (const auto& entry : xex2_system_flags_map) {
+          if (opt_header.value & entry.first) {
+            sb.AppendFormat("    {}\n", entry.second);
+          }
+        }
       } break;
       case XEX_HEADER_EXECUTION_INFO: {
         sb.Append("  XEX_HEADER_EXECUTION_INFO:\n");

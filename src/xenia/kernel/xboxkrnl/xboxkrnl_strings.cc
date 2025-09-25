@@ -7,17 +7,8 @@
  ******************************************************************************
  */
 
-#include <cstring>
-#include <iomanip>
-#include <sstream>
-#include <string>
-
-#include "xenia/base/logging.h"
-#include "xenia/kernel/kernel_state.h"
-#include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
-#include "xenia/kernel/xthread.h"
 #include "xenia/xbox.h"
 
 DEFINE_bool(log_string_format_kernel_calls, false,
@@ -412,7 +403,7 @@ int32_t format_core(PPCContext* ppc_context, FormatData& data, ArgList& args,
             start[0] = '\0';
 
             while (precision-- > 0 || value != 0) {
-              auto digit = (int32_t)(value % radix);
+              const auto digit = static_cast<uint64_t>(value) % radix;
               value /= radix;
               assert_true(digit < strlen(digits));
               *--start = digits[digit];

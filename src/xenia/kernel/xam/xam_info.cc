@@ -7,17 +7,18 @@
  ******************************************************************************
  */
 
-#include <xenia/kernel/xboxkrnl/xboxkrnl_error.h>
-#include <xenia/kernel/xboxkrnl/xboxkrnl_modules.h>
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xboxkrnl/xboxkrnl_error.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
+#include "xenia/kernel/xboxkrnl/xboxkrnl_modules.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/kernel/xthread.h"
@@ -57,7 +58,7 @@ namespace xam {
 // https://github.com/tpn/winsdk-10/blob/master/Include/10.0.14393.0/km/wdm.h#L15539
 typedef enum _MODE { KernelMode, UserMode, MaximumMode } MODE;
 
-dword_result_t XamFeatureEnabled_entry(dword_t unk) { return 0; }
+dword_result_t XamFeatureEnabled_entry(dword_t app_id) { return 0; }
 DECLARE_XAM_EXPORT1(XamFeatureEnabled, kNone, kStub);
 
 dword_result_t XamGetStagingMode_entry() { return cvars::staging_mode; }
@@ -106,7 +107,7 @@ void XamFormatDateString_entry(dword_t locale_format, qword_t filetime,
 }
 DECLARE_XAM_EXPORT1(XamFormatDateString, kNone, kImplemented);
 
-void XamFormatTimeString_entry(dword_t unk, qword_t filetime,
+void XamFormatTimeString_entry(dword_t user_index, qword_t filetime,
                                lpvoid_t output_buffer, dword_t output_count) {
   output_buffer.Zero(output_count * sizeof(char16_t));
 
@@ -162,8 +163,10 @@ dword_result_t XamBuildGamercardResourceLocator_entry(lpu16string_t filename,
 
   // If you're running an app that'll need them, make sure to extract xam.xex
   // resources with xextool ("xextool -d . xam.xex") and add a .xzp extension.
+  const auto xam_module = kernel_state()->GetModule("xam", true);
 
-  return keXamBuildResourceLocator(0, u"gamercrd", filename.value(), buffer_ptr,
+  return keXamBuildResourceLocator(xam_module ? xam_module->hmodule_ptr() : 0,
+                                   u"gamercrd", filename.value(), buffer_ptr,
                                    buffer_count);
 }
 DECLARE_XAM_EXPORT1(XamBuildGamercardResourceLocator, kNone, kImplemented);
@@ -171,8 +174,11 @@ DECLARE_XAM_EXPORT1(XamBuildGamercardResourceLocator, kNone, kImplemented);
 dword_result_t XamBuildSharedSystemResourceLocator_entry(lpu16string_t filename,
                                                          lpvoid_t buffer_ptr,
                                                          dword_t buffer_count) {
+  const auto xam_module = kernel_state()->GetModule("xam", true);
+
   // see notes inside XamBuildGamercardResourceLocator above
-  return keXamBuildResourceLocator(0, u"shrdres", filename.value(), buffer_ptr,
+  return keXamBuildResourceLocator(xam_module ? xam_module->hmodule_ptr() : 0,
+                                   u"shrdres", filename.value(), buffer_ptr,
                                    buffer_count);
 }
 DECLARE_XAM_EXPORT1(XamBuildSharedSystemResourceLocator, kNone, kImplemented);
@@ -192,6 +198,32 @@ dword_result_t XamBuildXamResourceLocator_entry(lpu16string_t filename,
                                    buffer_count);
 }
 DECLARE_XAM_EXPORT1(XamBuildXamResourceLocator, kNone, kImplemented);
+
+dword_result_t XamGetCachedTitleName_entry(dword_t title_id,
+                                           dword_t title_name_address,
+                                           lpdword_t title_name_size_ptr) {
+  if (!title_name_address || !title_name_size_ptr) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  assert_false(title_id != kernel_state()->title_id());
+
+  char16_t* title_name_ptr =
+      kernel_state()->memory()->TranslateVirtual<char16_t*>(title_name_address);
+
+  std::u16string title_name = xe::to_utf16(
+      kernel_state()->emulator()->game_info_database()->GetTitleName());
+
+  size_t title_name_size = string_util::size_in_bytes(title_name, true);
+
+  string_util::copy_and_swap_truncating(title_name_ptr, title_name,
+                                        title_name_size);
+
+  *title_name_size_ptr = static_cast<uint32_t>(title_name_size);
+
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamGetCachedTitleName, kNone, kImplemented);
 
 dword_result_t XamGetSystemVersion_entry() {
   // eh, just picking one. If we go too low we may break new games, but
@@ -221,7 +253,7 @@ dword_result_t XGetAVPack_entry() {
 DECLARE_XAM_EXPORT1(XGetAVPack, kNone, kStub);
 
 uint32_t xeXGetGameRegion() {
-  static uint32_t const table[] = {
+  static uint32_t constexpr table[] = {
       0xFFFFu, 0x03FFu, 0x02FEu, 0x02FEu, 0x03FFu, 0x02FEu, 0x0201u, 0x03FFu,
       0x02FEu, 0x02FEu, 0x03FFu, 0x03FFu, 0x03FFu, 0x03FFu, 0x02FEu, 0x03FFu,
       0x00FFu, 0xFFFFu, 0x02FEu, 0x03FFu, 0x0102u, 0x03FFu, 0x03FFu, 0x02FEu,
@@ -281,7 +313,7 @@ dword_result_t XamGetCurrentTitleId_entry() {
 DECLARE_XAM_EXPORT1(XamGetCurrentTitleId, kNone, kImplemented);
 
 dword_result_t XamIsCurrentTitleDash_entry(const ppc_context_t& ctx) {
-  return ctx->kernel_state->title_id() == 0xFFFE07D1;
+  return ctx->kernel_state->title_id() == kDashboardID;
 }
 DECLARE_XAM_EXPORT1(XamIsCurrentTitleDash, kNone, kImplemented);
 
@@ -524,22 +556,20 @@ dword_result_t GetModuleHandleA_entry(lpstring_t module_name) {
 }
 DECLARE_XAM_EXPORT1(GetModuleHandleA, kNone, kImplemented);
 
-dword_result_t XapipCreateThread_entry(lpdword_t lpThreadAttributes,
-                                       dword_t dwStackSize,
-                                       lpvoid_t lpStartAddress,
-                                       lpvoid_t lpParameter,
-                                       dword_t dwCreationFlags, dword_t unkn,
-                                       lpdword_t lpThreadId) {
-  uint32_t flags = (dwCreationFlags >> 2) & 1;
+dword_result_t XapipCreateThread_entry(
+    lpdword_t thread_attributes, dword_t stack_size, lpvoid_t start_address,
+    lpvoid_t parameter, dword_t creation_flags, dword_t thread_processor,
+    lpdword_t thread_id) {
+  uint32_t flags = (creation_flags >> 2) & 1;
 
-  if (unkn != -1) {
-    flags |= 1 << unkn << 24;
+  if (thread_processor != -1) {
+    flags |= 1 << thread_processor << 24;
   }
 
   xe::be<uint32_t> result = 0;
 
   const X_STATUS error_code = xe::kernel::xboxkrnl::ExCreateThread(
-      &result, dwStackSize, lpThreadId, lpStartAddress, lpParameter, 0, flags);
+      &result, stack_size, thread_id, start_address, parameter, 0, flags);
 
   if (XFAILED(error_code)) {
     RtlSetLastNTError_entry(error_code);
@@ -649,8 +679,18 @@ dword_result_t lstrlenW_entry(lpu16string_t string) {
 }
 DECLARE_XAM_EXPORT1(lstrlenW, kNone, kImplemented);
 
-dword_result_t XGetAudioFlags_entry() { return cvars::audio_flag; }
-DECLARE_XAM_EXPORT1(XGetAudioFlags, kNone, kStub);
+dword_result_t XGetAudioFlags_entry() {
+  if (cvars::avpack == 2) {
+    return 2;
+  }
+
+  if (!cvars::audio_flag) {
+    return 0x10000 | 0x1;
+  }
+
+  return cvars::audio_flag;
+}
+DECLARE_XAM_EXPORT1(XGetAudioFlags, kNone, kImplemented);
 
 /*
         todo: this table should instead be pointed to by a member of kernel
@@ -701,6 +741,65 @@ DECLARE_XAM_EXPORT1(RtlRandom, kNone, kImplemented);
 
 dword_result_t Refresh_entry() { return X_ERROR_SUCCESS; }
 DECLARE_XAM_EXPORT1(Refresh, kNone, kStub);
+
+dword_result_t XamIsSystemExperienceTitleId_entry(dword_t title_id) {
+  return IsSystemExperienceTitle(title_id);
+}
+DECLARE_XAM_EXPORT1(XamIsSystemExperienceTitleId, kNone, kImplemented);
+
+dword_result_t XamIsSystemTitleId_entry(dword_t title_id) {
+  return IsSystemTitle(title_id);
+}
+DECLARE_XAM_EXPORT1(XamIsSystemTitleId, kNone, kImplemented);
+
+dword_result_t XamIsXbox1TitleId_entry(dword_t title_id) {
+  return IsOriginalXboxTitle(title_id);
+}
+DECLARE_XAM_EXPORT1(XamIsXbox1TitleId, kNone, kImplemented);
+
+dword_result_t XamIsChildAccountSignedIn_entry() {
+  for (uint32_t i = 0; i < XUserMaxUserCount; i++) {
+    const auto& profile = kernel_state()->xam_state()->GetUserProfile(i);
+    if (profile && profile->IsParentalControlled()) {
+      return true;
+    }
+  }
+
+  return false;
+}
+DECLARE_XAM_EXPORT1(XamIsChildAccountSignedIn, kNone, kImplemented);
+
+void XamSetActiveDashAppInfo_entry(pointer_t<X_DASH_APP_INFO> dash_app) {
+  if (!dash_app) {
+    kernel_state()->xam_state()->dash_app_info_ = {};
+    return;
+  }
+  std::memcpy(&kernel_state()->xam_state()->dash_app_info_, dash_app,
+              sizeof(X_DASH_APP_INFO));
+}
+DECLARE_XAM_EXPORT1(XamSetActiveDashAppInfo, kNone, kImplemented);
+
+void XamGetActiveDashAppInfo_entry(pointer_t<X_DASH_APP_INFO> dash_app) {
+  if (!dash_app) {
+    return;
+  }
+  std::memcpy(dash_app, &kernel_state()->xam_state()->dash_app_info_,
+              sizeof(X_DASH_APP_INFO));
+}
+DECLARE_XAM_EXPORT1(XamGetActiveDashAppInfo, kNone, kImplemented);
+
+void XampWebInstrumentationSetProfileCounts_entry(dword_t live_profiles,
+                                                  dword_t local_profiles,
+                                                  dword_t adult_profiles,
+                                                  dword_t child_profiles) {}
+DECLARE_XAM_EXPORT1(XampWebInstrumentationSetProfileCounts, kUserProfiles,
+                    kStub);
+
+dword_result_t XamDoesOmniNeedConfiguration_entry() { return 0; }
+DECLARE_XAM_EXPORT1(XamDoesOmniNeedConfiguration, kNone, kStub);
+
+dword_result_t XamFirstRunExperienceShouldRun_entry() { return 0; }
+DECLARE_XAM_EXPORT1(XamFirstRunExperienceShouldRun, kNone, kStub);
 
 }  // namespace xam
 }  // namespace kernel

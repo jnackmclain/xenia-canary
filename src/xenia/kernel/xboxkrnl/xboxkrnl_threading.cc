@@ -8,21 +8,12 @@
  */
 
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
-#include <algorithm>
-#include <vector>
 #include "xenia/base/atomic.h"
 #include "xenia/base/clock.h"
-#include "xenia/base/logging.h"
-#include "xenia/base/mutex.h"
 #include "xenia/cpu/processor.h"
-#include "xenia/kernel/kernel_state.h"
-#include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
-#include "xenia/kernel/xevent.h"
-#include "xenia/kernel/xmutant.h"
 #include "xenia/kernel/xsemaphore.h"
-#include "xenia/kernel/xthread.h"
 #include "xenia/kernel/xtimer.h"
 #include "xenia/xbox.h"
 
@@ -806,14 +797,14 @@ dword_result_t NtCreateMutant_entry(
 }
 DECLARE_XBOXKRNL_EXPORT1(NtCreateMutant, kThreading, kImplemented);
 
-dword_result_t NtReleaseMutant_entry(dword_t mutant_handle, dword_t unknown) {
+dword_result_t NtReleaseMutant_entry(dword_t mutant_handle,
+                                     lpdword_t previous_count) {
   // This doesn't seem to be supported.
   // int32_t previous_count_ptr = SHIM_GET_ARG_32(2);
 
   // Whatever arg 1 is all games seem to set it to 0, so whether it's
   // abandon or wait we just say false. Which is good, cause they are
   // both ignored.
-  assert_zero(unknown);
   uint32_t priority_increment = 0;
   bool abandon = false;
   bool wait = false;
@@ -870,11 +861,11 @@ DECLARE_XBOXKRNL_EXPORT1(NtCreateTimer, kThreading, kImplemented);
 
 dword_result_t NtSetTimerEx_entry(dword_t timer_handle, lpqword_t due_time_ptr,
                                   lpvoid_t routine_ptr /*PTIMERAPCROUTINE*/,
-                                  dword_t unk_one, lpvoid_t routine_arg,
+                                  dword_t mode, lpvoid_t routine_arg,
                                   dword_t resume, dword_t period_ms,
-                                  dword_t unk_zero) {
-  assert_true(unk_one == 1);
-  assert_true(unk_zero == 0);
+                                  lpdword_t unk_zero) {
+  assert_true(mode == 1);
+  assert_true(!unk_zero);
 
   uint64_t due_time = *due_time_ptr;
 
@@ -1781,6 +1772,36 @@ pointer_result_t InterlockedFlushSList_entry(
   return first;
 }
 DECLARE_XBOXKRNL_EXPORT1(InterlockedFlushSList, kThreading, kImplemented);
+
+dword_result_t KeSetPriorityThread_entry(pointer_t<X_KTHREAD> thread_ptr,
+                                         dword_t new_priority,
+                                         const ppc_context_t& context) {
+  if (!thread_ptr) {
+    XELOGE("{}: Invalid thread_ptr.", __func__);
+    return 0;
+  }
+
+  if (thread_ptr->header.type != 6) {
+    XELOGW("{}: Invalid object type: {}", __func__, thread_ptr->header.type);
+  }
+
+  X_KPRCB* prcb = context->TranslateVirtual(thread_ptr->a_prcb_ptr);
+  const uint32_t old_irql = xeKeKfAcquireSpinLock(context, &prcb->spin_lock);
+  const uint8_t old_priority = thread_ptr->priority;
+
+  auto thread_ref =
+      XObject::GetNativeObject<XThread>(kernel_state(), thread_ptr);
+
+  if (!thread_ref) {
+    XELOGW("{}: Missing native thread: {}", __func__, thread_ptr->header.type);
+  } else {
+    thread_ref->SetPriority(new_priority);
+  }
+
+  xeKeKfReleaseSpinLock(context, &prcb->spin_lock, old_irql);
+  return old_priority;
+}
+DECLARE_XBOXKRNL_EXPORT1(KeSetPriorityThread, kThreading, kImplemented);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

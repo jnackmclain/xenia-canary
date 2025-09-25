@@ -9,8 +9,6 @@
 
 #include "xenia/vfs/devices/disc_zarchive_entry.h"
 
-#include <algorithm>
-
 #include "xenia/base/math.h"
 #include "xenia/vfs/devices/disc_zarchive_file.h"
 
@@ -44,6 +42,8 @@ std::unique_ptr<MappedMemory> DiscZarchiveEntry::OpenMapped(
     MappedMemory::Mode mode, size_t offset, size_t length) {
   return nullptr;
 }
+
+bool DiscZarchiveEntry::DeleteEntryInternal(Entry* entry) { return false; }
 
 }  // namespace vfs
 }  // namespace xe

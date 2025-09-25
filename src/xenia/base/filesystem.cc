@@ -9,8 +9,6 @@
 
 #include "xenia/base/filesystem.h"
 
-#include <algorithm>
-
 namespace xe {
 namespace filesystem {
 
@@ -22,6 +20,19 @@ bool CreateParentFolder(const std::filesystem::path& path) {
     }
   }
   return true;
+}
+
+std::error_code CreateFolder(const std::filesystem::path& path) {
+  if (std::filesystem::exists(path)) {
+    return {};
+  }
+
+  std::error_code ec;
+  if (std::filesystem::create_directories(path, ec)) {
+    return {};
+  }
+
+  return ec;
 }
 
 std::vector<FileInfo> ListDirectories(const std::filesystem::path& path) {

@@ -11,7 +11,6 @@
 #include "xenia/kernel/xthread.h"
 
 #include "xenia/base/logging.h"
-#include "xenia/base/threading.h"
 #include "xenia/emulator.h"
 #include "xenia/xbox.h"
 
@@ -31,6 +30,9 @@ X_HRESULT XmpApp::XMPGetStatus(uint32_t state_ptr) {
     xe::threading::Sleep(std::chrono::milliseconds(1));
   }
 
+  if (!state_ptr) {
+    return X_E_INVALIDARG;
+  }
   const uint32_t state = static_cast<uint32_t>(
       kernel_state_->emulator()->audio_media_player()->GetState());
 
@@ -92,6 +94,8 @@ X_HRESULT XmpApp::XMPCreateTitlePlaylist(
 
   kernel_state_->emulator()->audio_media_player()->AddPlaylist(
       next_playlist_handle_, std::move(playlist));
+  kernel_state_->BroadcastNotification(
+      kXNotificationXmpTitlePlayListContentChanged, 0);
 
   return X_E_SUCCESS;
 }
@@ -301,7 +305,7 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       auto info = memory_->TranslateVirtual<XMP_SONGINFO*>(args->info_ptr);
       assert_true(args->xmp_client == 0x00000002);
       assert_zero(args->unk_ptr);
-      XELOGE("XMPGetCurrentSong({:08X}, {:08X})", uint32_t(args->unk_ptr),
+      XELOGD("XMPGetCurrentSong({:08X}, {:08X})", uint32_t(args->unk_ptr),
              uint32_t(args->info_ptr));
 
       Song* current_song =
@@ -395,6 +399,8 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       // XMPCreateUserPlaylistEnumerator
       // For whatever reason buffer_length is 0 in this case.
       // Return buffer size is set to be items * 0x338 bytes.
+      // Games used in:
+      // 54540809, 494707D4
       return X_E_SUCCESS;
     }
     case 0x00070029: {
@@ -437,10 +443,27 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x0007002B: {
+      // XMPGetMediaSources
       // Called on the NXE and Kinect dashboard after clicking on the picture,
       // video, and music library
-      XELOGD("XMPUnk7002B, unimplemented");
-      return X_E_FAIL;
+      assert_true(!buffer_length || buffer_length == 20);
+      struct {
+        xe::be<uint32_t> xmp_client;
+        xe::be<uint32_t> unk1;
+        xe::be<uint32_t> unk2;
+        xe::be<uint32_t> unk3;
+        xe::be<uint32_t> unk4;
+      }* args = memory_->TranslateVirtual<decltype(args)>(buffer_ptr);
+      static_assert_size(decltype(*args), 20);
+
+      assert_true(args->xmp_client == 0x00000002 ||
+                  args->xmp_client == 0x00000000);
+      XELOGD(
+          "XMPGetMediaSources({:08X}, {:08X}, {:08X}, {:08X}, {:08X}), "
+          "unimplemented",
+          args->xmp_client.get(), args->unk1.get(), args->unk2.get(),
+          args->unk3.get(), args->unk4.get());
+      return X_E_INVALIDARG;
     }
     case 0x0007002E: {
       assert_true(!buffer_length || buffer_length == 12);
@@ -461,9 +484,27 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x0007002F: {
+      // XMPDashInIt
       // Called on the start up of all dashboard versions before kinect
-      XELOGD("XMPUnk7002F, unimplemented");
-      return X_E_FAIL;
+      assert_true(!buffer_length || buffer_length == 24);
+      struct {
+        xe::be<uint32_t> xmp_client;
+        xe::be<uint32_t> unk1;
+        xe::be<uint32_t> unk2;
+        xe::be<uint32_t> unk3;
+        xe::be<uint32_t> unk4;
+        xe::be<uint32_t> storage_ptr;
+      }* args = memory_->TranslateVirtual<decltype(args)>(buffer_ptr);
+      static_assert_size(decltype(*args), 24);
+
+      assert_true(args->xmp_client == 0x00000002 ||
+                  args->xmp_client == 0x00000000);
+      XELOGD(
+          "XMPDashInIt({:08X}, {:08X}, {:08X}, {:08X}, {:08X}, {:08X}), "
+          "unimplemented",
+          args->xmp_client.get(), args->unk1.get(), args->unk2.get(),
+          args->unk3.get(), args->unk4.get(), args->storage_ptr.get());
+      return X_E_INVALIDARG;
     }
     case 0x0007003D: {
       // XMPCaptureOutput
@@ -484,17 +525,43 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x00070044: {
+      // XMPSetMediaSourceWorkspace
       // Called on the start up of all dashboard versions before kinect
-      // When it returns X_E_FAIL you can access the music player up to version
-      // 5787
-      XELOGD("XMPUnk70044, unimplemented");
-      return X_E_FAIL;
+      // When it returns X_E_INVALIDARG you can access the music player up to
+      // version 5787
+      assert_true(!buffer_length || buffer_length == 16);
+      struct {
+        xe::be<uint32_t> xmp_client;
+        xe::be<uint32_t> unk1;
+        xe::be<uint32_t> storage_ptr;
+        xe::be<uint32_t> unk2;
+      }* args = memory_->TranslateVirtual<decltype(args)>(buffer_ptr);
+      static_assert_size(decltype(*args), 16);
+
+      assert_true(args->xmp_client == 0x00000002 ||
+                  args->xmp_client == 0x00000000);
+      XELOGD(
+          "XMPSetMediaSourceWorkspace({:08X}, {:08X}, {:08X}, {:08X}), "
+          "unimplemented",
+          args->xmp_client.get(), args->unk1.get(), args->storage_ptr.get(),
+          args->unk2.get());
+      return X_E_INVALIDARG;
     }
     case 0x00070053: {
-      // Called on the blades dashboard after clicking on the picture,
-      // video, and music library
-      XELOGD("XMPUnk70053, unimplemented");
-      return X_E_FAIL;
+      // Called on the blades dashboard Version 4532-5787 after clicking on the
+      // picture or video library. It only receives buffer
+      // *unk1_ptr = to some unknown value
+      struct {
+        xe::be<uint32_t> xmp_client;
+        xe::be<uint32_t> unk1_ptr;
+      }* args = memory_->TranslateVirtual<decltype(args)>(buffer_ptr);
+      static_assert_size(decltype(*args), 8);
+
+      assert_true(args->xmp_client == 0x00000002 ||
+                  args->xmp_client == 0x00000000);
+      XELOGD("XMPUnk70053({:08X}, {:08X}), unimplemented",
+             args->xmp_client.get(), args->unk1_ptr.get());
+      return X_E_SUCCESS;
     }
   }
   XELOGE(

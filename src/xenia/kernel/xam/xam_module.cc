@@ -9,8 +9,6 @@
 
 #include "xenia/kernel/xam/xam_module.h"
 
-#include <vector>
-
 #include "xenia/base/math.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/xam_private.h"
@@ -20,6 +18,7 @@ namespace kernel {
 namespace xam {
 
 std::atomic<int> xam_dialogs_shown_ = {0};
+std::atomic<int> xam_nui_dialogs_shown_ = {0};
 
 // FixMe(RodoMa92): Same hack as main_init_posix.cc:40
 //  Force initialization before constructor calling, mimicking
@@ -33,6 +32,7 @@ static std::vector<xe::cpu::Export*>
     xam_exports(4096);
 
 bool xeXamIsUIActive() { return xam_dialogs_shown_ > 0; }
+bool xeXamIsNuiUIActive() { return xam_nui_dialogs_shown_ > 0; }
 
 XamModule::XamModule(Emulator* emulator, KernelState* kernel_state)
     : KernelModule(kernel_state, "xe:\\xam.xex"), loader_data_() {

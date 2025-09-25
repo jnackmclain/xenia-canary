@@ -10,7 +10,6 @@
 #include "xenia/gpu/trace_viewer.h"
 
 #include <cinttypes>
-#include <string>
 
 #include "third_party/half/include/half.hpp"
 #include "third_party/imgui/imgui.h"
@@ -47,11 +46,11 @@ namespace gpu {
 
 using namespace xe::gpu::xenos;
 
-static const ImVec4 kColorError =
+static constexpr ImVec4 kColorError =
     ImVec4(255 / 255.0f, 0 / 255.0f, 0 / 255.0f, 255 / 255.0f);
-static const ImVec4 kColorComment =
+static constexpr ImVec4 kColorComment =
     ImVec4(42 / 255.0f, 179 / 255.0f, 0 / 255.0f, 255 / 255.0f);
-static const ImVec4 kColorIgnored =
+static constexpr ImVec4 kColorIgnored =
     ImVec4(100 / 255.0f, 100 / 255.0f, 100 / 255.0f, 255 / 255.0f);
 
 TraceViewer::TraceViewer(xe::ui::WindowedAppContext& app_context,
@@ -235,13 +234,13 @@ void TraceViewer::DrawControllerUI() {
     ImGui::SetTooltip("Reset to first frame");
   }
   ImGui::SameLine();
-  ImGui::PushButtonRepeat(true);
+  ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, true);
   if (ImGui::Button(">>", ImVec2(0, 0))) {
     if (target_frame + 1 < player_->frame_count()) {
       ++target_frame;
     }
   }
-  ImGui::PopButtonRepeat();
+  ImGui::PopItemFlag();
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip("Next frame (hold for continuous)");
   }
@@ -434,7 +433,8 @@ void TraceViewer::DrawPacketDisassemblerUI() {
 int TraceViewer::RecursiveDrawCommandBufferUI(
     const TraceReader::Frame* frame, TraceReader::CommandBuffer* buffer) {
   int selected_id = -1;
-  int column_width = int(ImGui::GetContentRegionMax().x);
+  int column_width =
+      int(ImGui::GetContentRegionAvail().x);  // TODO: This might be broken
 
   for (size_t i = 0; i < buffer->commands.size(); i++) {
     switch (buffer->commands[i].type) {
@@ -513,7 +513,8 @@ void TraceViewer::DrawCommandListUI() {
   }
   int command_count = int(frame->commands.size());
   int target_command = player_->current_command_index();
-  int column_width = int(ImGui::GetContentRegionMax().x);
+  int column_width =
+      int(ImGui::GetContentRegionAvail().x);  // TODO: This might be broken
   ImGui::Text("Frame #%d", player_->current_frame_index());
   ImGui::Separator();
   if (ImGui::Button("reset")) {
@@ -523,7 +524,7 @@ void TraceViewer::DrawCommandListUI() {
     ImGui::SetTooltip("Reset to before any frame commands");
   }
   ImGui::SameLine();
-  ImGui::PushButtonRepeat(true);
+  ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, true);
   if (ImGui::Button("prev", ImVec2(0, 0))) {
     if (target_command >= 0) {
       --target_command;
@@ -541,7 +542,7 @@ void TraceViewer::DrawCommandListUI() {
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip("Move to the next command (hold)");
   }
-  ImGui::PopButtonRepeat();
+  ImGui::PopItemFlag();
   ImGui::SameLine();
   if (ImGui::Button("end")) {
     target_command = command_count - 1;
@@ -815,10 +816,11 @@ void TraceViewer::DrawVertexFetcher(Shader* shader,
   }
   ImGui::BeginChild("#indices", ImVec2(0, 300));
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10, 0));
-  int display_start, display_end;
-  ImGui::CalcListClipping(vertex_count, ImGui::GetTextLineHeight(),
-                          &display_start, &display_end);
-  ImGui::Dummy(ImVec2(0, (display_start)*ImGui::GetTextLineHeight()));
+  int display_start = 0;
+  int display_end = 0;
+  // ImGui::CalcListClipping(vertex_count, ImGui::GetTextLineHeight(),
+  //                         &display_start, &display_end);
+  // ImGui::Dummy(ImVec2(0, (display_start)*ImGui::GetTextLineHeight()));
   ImGui::Columns(column_count);
   if (display_start <= 1) {
     for (size_t el_index = 0; el_index < vertex_binding.attributes.size();
@@ -1180,28 +1182,28 @@ void TraceViewer::DrawStateUI() {
   }
 
   auto enable_mode =
-      static_cast<ModeControl>(regs[XE_GPU_REG_RB_MODECONTROL] & 0x7);
+      static_cast<EdramMode>(regs[XE_GPU_REG_RB_MODECONTROL] & 0x7);
 
   switch (enable_mode) {
-    case ModeControl::kIgnore:
+    case EdramMode::kNoOperation:
       ImGui::Text("Ignored Command %d", player_->current_command_index());
       break;
-    case ModeControl::kColorDepth:
-    case ModeControl::kDepth: {
+    case EdramMode::kColorDepth:
+    case EdramMode::kDepthOnly: {
       static const char* kPrimNames[] = {
           "<none>",         "point list",   "line list",      "line strip",
           "triangle list",  "triangle fan", "triangle strip", "unknown 0x7",
           "rectangle list", "unknown 0x9",  "unknown 0xA",    "unknown 0xB",
           "line loop",      "quad list",    "quad strip",     "unknown 0xF",
       };
-      ImGui::Text("%s Command %d: %s, %d indices",
-                  enable_mode == ModeControl::kColorDepth ? "Color-Depth"
-                                                          : "Depth-only",
-                  player_->current_command_index(),
-                  kPrimNames[int(draw_info.prim_type)], draw_info.index_count);
+      ImGui::Text(
+          "%s Command %d: %s, %d indices",
+          enable_mode == EdramMode::kColorDepth ? "Color-Depth" : "Depth-only",
+          player_->current_command_index(),
+          kPrimNames[int(draw_info.prim_type)], draw_info.index_count);
       break;
     }
-    case ModeControl::kCopy: {
+    case EdramMode::kCopy: {
       uint32_t copy_dest_base = regs[XE_GPU_REG_RB_COPY_DEST_BASE];
       ImGui::Text("Copy Command %d (to %.8X)", player_->current_command_index(),
                   copy_dest_base);
@@ -1363,7 +1365,7 @@ void TraceViewer::DrawStateUI() {
       static_cast<xenos::MsaaSamples>((rb_surface_info >> 16) & 0x3);
 
   if (ImGui::CollapsingHeader("Color Targets")) {
-    if (enable_mode != ModeControl::kDepth) {
+    if (enable_mode != EdramMode::kDepthOnly) {
       // Alpha testing -- ALPHAREF, ALPHAFUNC, ALPHATESTENABLE
       // if(ALPHATESTENABLE && frag_out.a [<=/ALPHAFUNC] ALPHAREF) discard;
       uint32_t color_control = regs[XE_GPU_REG_RB_COLORCONTROL];
@@ -1641,11 +1643,12 @@ void TraceViewer::DrawStateUI() {
 
       ImGui::BeginChild("#vsvertices", ImVec2(0, 300));
 
-      int display_start, display_end;
-      ImGui::CalcListClipping(int(vertices.size() / 4),
-                              ImGui::GetTextLineHeight(), &display_start,
-                              &display_end);
-      ImGui::Dummy(ImVec2(0, (display_start)*ImGui::GetTextLineHeight()));
+      int display_start = 0;
+      int display_end = 0;
+      // ImGui::CalcListClipping(int(vertices.size() / 4),
+      //                         ImGui::GetTextLineHeight(), &display_start,
+      //                         &display_end);
+      // ImGui::Dummy(ImVec2(0, (display_start)*ImGui::GetTextLineHeight()));
 
       ImGui::Columns(int(el_size), "#vsvertices", true);
       for (size_t i = display_start; i < display_end; i++) {
@@ -1706,11 +1709,12 @@ void TraceViewer::DrawStateUI() {
       }
       ImGui::BeginChild("#indices", ImVec2(0, 300));
       ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-      int display_start, display_end;
-      ImGui::CalcListClipping(1 + draw_info.index_count,
-                              ImGui::GetTextLineHeight(), &display_start,
-                              &display_end);
-      ImGui::Dummy(ImVec2(0, (display_start)*ImGui::GetTextLineHeight()));
+      int display_start = 0;
+      int display_end = 0;
+      // ImGui::CalcListClipping(1 + draw_info.index_count,
+      //                         ImGui::GetTextLineHeight(), &display_start,
+      //                         &display_end);
+      // ImGui::Dummy(ImVec2(0, (display_start)*ImGui::GetTextLineHeight()));
       ImGui::Columns(2, "#indices", true);
       ImGui::SetColumnOffset(1, 60);
       if (display_start <= 1) {

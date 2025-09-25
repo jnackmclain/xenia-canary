@@ -9,9 +9,7 @@
 
 #include "xenia/kernel/xboxkrnl/xboxkrnl_xconfig.h"
 #include "xenia/base/logging.h"
-#include "xenia/cpu/processor.h"
 #include "xenia/kernel/kernel_state.h"
-#include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/xbox.h"
@@ -58,12 +56,13 @@ DEFINE_uint32(
 DECLARE_bool(widescreen);
 DECLARE_bool(use_50Hz_mode);
 DECLARE_int32(video_standard);
+DECLARE_uint32(internal_display_resolution);
 
 namespace xe {
 namespace kernel {
 namespace xboxkrnl {
 
-X_STATUS xeExGetXConfigSetting(uint16_t category, uint16_t setting,
+X_STATUS xeExGetXConfigSetting(X_CONFIG_CATEGORY category, uint16_t setting,
                                void* buffer, uint16_t buffer_size,
                                uint16_t* required_size) {
   uint16_t setting_size = 0;
@@ -73,10 +72,9 @@ X_STATUS xeExGetXConfigSetting(uint16_t category, uint16_t setting,
   // https://free60project.github.io/wiki/XConfig.html
   // https://github.com/oukiar/freestyledash/blob/master/Freestyle/Tools/Generic/ExConfig.h
   switch (category) {
-    case 0x0002:
-      // XCONFIG_SECURED_CATEGORY
+    case XCONFIG_SECURED_CATEGORY:
       switch (setting) {
-        case 0x0002:  // XCONFIG_SECURED_AV_REGION
+        case XCONFIG_SECURED_AV_REGION:
           setting_size = 4;
           switch (cvars::video_standard) {
             case 1:  // NTSCM
@@ -103,52 +101,143 @@ X_STATUS xeExGetXConfigSetting(uint16_t category, uint16_t setting,
           return X_STATUS_INVALID_PARAMETER_2;
       }
       break;
-    case 0x0003:
-      // XCONFIG_USER_CATEGORY
+    case XCONFIG_USER_CATEGORY:
       switch (setting) {
-        case 0x0001:  // XCONFIG_USER_TIME_ZONE_BIAS
-        case 0x0002:  // XCONFIG_USER_TIME_ZONE_STD_NAME
-        case 0x0003:  // XCONFIG_USER_TIME_ZONE_DLT_NAME
-        case 0x0004:  // XCONFIG_USER_TIME_ZONE_STD_DATE
-        case 0x0005:  // XCONFIG_USER_TIME_ZONE_DLT_DATE
-        case 0x0006:  // XCONFIG_USER_TIME_ZONE_STD_BIAS
-        case 0x0007:  // XCONFIG_USER_TIME_ZONE_DLT_BIAS
+        case XCONFIG_USER_TIME_ZONE_BIAS:
+        case XCONFIG_USER_TIME_ZONE_STD_NAME:
+        case XCONFIG_USER_TIME_ZONE_DLT_NAME:
+        case XCONFIG_USER_TIME_ZONE_STD_DATE:
+        case XCONFIG_USER_TIME_ZONE_DLT_DATE:
+        case XCONFIG_USER_TIME_ZONE_STD_BIAS:
+        case XCONFIG_USER_TIME_ZONE_DLT_BIAS:
           setting_size = 4;
           // TODO(benvanik): get this value.
           xe::store_and_swap<uint32_t>(value, 0);
           break;
-        case 0x0009:  // XCONFIG_USER_LANGUAGE
+        case XCONFIG_USER_LANGUAGE:
           setting_size = 4;
           xe::store_and_swap<uint32_t>(value, cvars::user_language);
           break;
-        case 0x000A:  // XCONFIG_USER_VIDEO_FLAGS
+        case XCONFIG_USER_VIDEO_FLAGS:
           setting_size = 4;
-          xe::store_and_swap<uint32_t>(
-              value, cvars::widescreen ? X_VIDEO_ASPECT_RATIO::Widescreen
-                                       : X_VIDEO_ASPECT_RATIO::RatioNormal);
+          xe::store_and_swap<uint32_t>(value, cvars::widescreen
+                                                  ? X_VIDEO_FLAGS::Widescreen
+                                                  : X_VIDEO_FLAGS::RatioNormal);
           break;
-        case 0x000B:  // XCONFIG_USER_AUDIO_FLAGS
+        case XCONFIG_USER_AUDIO_FLAGS:
           setting_size = 4;
           xe::store_and_swap<uint32_t>(value, cvars::audio_flag);
           break;
-        case 0x000C:  // XCONFIG_USER_RETAIL_FLAGS
+        case XCONFIG_USER_RETAIL_FLAGS:
           setting_size = 4;
           // TODO(benvanik): get this value.
-          xe::store_and_swap<uint32_t>(value, 0);
+          xe::store_and_swap<uint32_t>(value, 0x40);
           break;
-        case 0x000E:  // XCONFIG_USER_COUNTRY
+        case XCONFIG_USER_COUNTRY:
           setting_size = 1;
           value[0] = static_cast<uint8_t>(cvars::user_country);
           break;
-        case 0x000F:  // XCONFIG_USER_PC_FLAGS
+        case XCONFIG_USER_PC_FLAGS:
           setting_size = 1;
-          xe::store_and_swap<uint8_t>(value, 0);
+          // All related flags must be set for PC to function
+          // Both flags set even when PC are off
+          value[0] =
+              X_PC_FLAGS::XBLAllowed | X_PC_FLAGS::XBLMembershipCreationAllowed;
           break;
-        case 0x001B:  // XCONFIG_USER_PC_HINT
-          setting_size = 1;
-          xe::store_and_swap<uint8_t>(value, 0);
+        case XCONFIG_USER_AV_COMPONENT_SCREENSZ:
+          setting_size = 4;
+          // int16_t* value[2];
+          if (XHDTVResolution.find(cvars::internal_display_resolution) !=
+              XHDTVResolution.cend()) {
+            xe::store_and_swap<int32_t>(
+                value, XHDTVResolution.at(cvars::internal_display_resolution));
+          } else {
+            XELOGW("Resolution not supported for AV Component");
+            xe::store_and_swap<int32_t>(value, 0);
+          }
           break;
-        case 0x0029:  // XCONFIG_USER_VIDEO_OUTPUT_BLACK_LEVELS
+        case XCONFIG_USER_AV_VGA_SCREENSZ:
+          setting_size = 4;
+          // int16_t* value[2];
+          if (XVGAResolution.find(cvars::internal_display_resolution) !=
+              XVGAResolution.cend()) {
+            xe::store_and_swap<int32_t>(
+                value, XVGAResolution.at(cvars::internal_display_resolution));
+          } else {
+            XELOGW("Resolution not supported for VGA");
+            xe::store_and_swap<int32_t>(value, 0);
+          }
+          break;
+        case XCONFIG_USER_PC_GAME:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(value,
+                                       X_PC_GAMES_FLAGS::NoGameRestrictions);
+          break;
+        case XCONFIG_USER_PC_PASSWORD:
+          setting_size = 4;
+          std::memset(value, 0, 4);
+          break;
+        case XCONFIG_USER_PC_MOVIE:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(value,
+                                       X_PC_MOVIE_FLAGS::NoMovieRestrictions);
+          break;
+        case XCONFIG_USER_PC_GAME_RATING:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(value,
+                                       X_PC_GAME_RATING_FLAGS::DefaultGame);
+          break;
+        case XCONFIG_USER_PC_MOVIE_RATING:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(value,
+                                       X_PC_MOVIE_RATING_FLAGS::DefaultMovie);
+          break;
+        case XCONFIG_USER_PC_HINT:
+          // ExSetXConfigSetting and ExGetXConfigSetting request size of 0x40
+          setting_size = 0x40;
+          store_and_swap<std::string>(value, "");
+          break;
+        case XCONFIG_USER_PC_HINT_ANSWER:
+          setting_size = 0x20;
+          store_and_swap<std::string>(value, "");
+          break;
+        case XCONFIG_USER_ARCADE_FLAGS:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(value, X_ARCADE_FLAGS::AutoDownloadOff);
+          break;
+        case XCONFIG_USER_PC_VERSION:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(value, X_PC_VERSION::VersionOne);
+          break;
+        case XCONFIG_USER_PC_TV:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(value, X_PC_TV::NoTVRestrictions);
+          break;
+        case XCONFIG_USER_PC_TV_RATING:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(value, X_PC_TV_RATING::DefaultTV);
+          break;
+        case XCONFIG_USER_PC_EXPLICIT_VIDEO:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(
+              value, X_PC_EXPLICIT_VIDEO::ExplicitVideoAllowed);
+          break;
+        case XCONFIG_USER_PC_EXPLICIT_VIDEO_RATING:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(
+              value, X_PC_EXPLICIT_VIDEO_RATING::ExplicitAllowed);
+          break;
+        case XCONFIG_USER_PC_UNRATED_VIDEO:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(value,
+                                       X_PC_EXPLICIT_UNRATED::UnratedALL);
+          break;
+        case XCONFIG_USER_PC_UNRATED_VIDEO_RATING:
+          setting_size = 4;
+          xe::store_and_swap<uint32_t>(
+              value, X_PC_EXPLICIT_UNRATED_RATING::DefaultExplicitUnrated);
+          break;
+        case XCONFIG_USER_VIDEO_OUTPUT_BLACK_LEVELS:
           setting_size = 4;
           xe::store_and_swap<uint32_t>(value, X_BLACK_LEVEL::LevelNormal);
           break;
@@ -159,23 +248,22 @@ X_STATUS xeExGetXConfigSetting(uint16_t category, uint16_t setting,
           return X_STATUS_INVALID_PARAMETER_2;
       }
       break;
-    case 0x0007:
-      // XCONFIG_CONSOLE_SETTINGS
+    case XCONFIG_CONSOLE_CATEGORY:
       switch (setting) {
-        case 0x0001:  // XCONFIG_CONSOLE_SCREENSAVER
+        case XCONFIG_CONSOLE_SCREEN_SAVER:
           setting_size = 2;
           xe::store_and_swap<int16_t>(value, X_SCREENSAVER::ScreensaverOff);
           break;
-        case 0x0002:  // XCONFIG_CONSOLE_AUTO_SHUTDOWN
+        case XCONFIG_CONSOLE_AUTO_SHUT_OFF:
           setting_size = 2;
           xe::store_and_swap<int16_t>(value, X_AUTO_SHUTDOWN::AutoShutdownOff);
           break;
-        case 0x0004:  // XCONFIG_CONSOLE_CAMERA_SETTINGS
+        case XCONFIG_CONSOLE_CAMERA_SETTINGS:
           // Camera Flags are added together and last byte is always 0x1
           setting_size = 4;
           xe::store_and_swap<uint32_t>(value, X_CAMERA_FLAGS::AutoAll);
           break;
-        case 0x0007:  // XCONFIG_CONSOLE_KEYBOARD_LAYOUT
+        case XCONFIG_CONSOLE_KEYBOARD_LAYOUT:
           setting_size = 2;
           xe::store_and_swap<int16_t>(value,
                                       X_KEYBOARD_LAYOUT::KeyboardDefault);
@@ -218,8 +306,9 @@ dword_result_t ExGetXConfigSetting_entry(word_t category, word_t setting,
                                          word_t buffer_size,
                                          lpword_t required_size_ptr) {
   uint16_t required_size = 0;
-  X_STATUS result = xeExGetXConfigSetting(category, setting, buffer_ptr,
-                                          buffer_size, &required_size);
+  X_STATUS result =
+      xeExGetXConfigSetting(static_cast<X_CONFIG_CATEGORY>(category.value()),
+                            setting, buffer_ptr, buffer_size, &required_size);
 
   if (required_size_ptr) {
     *required_size_ptr = required_size;

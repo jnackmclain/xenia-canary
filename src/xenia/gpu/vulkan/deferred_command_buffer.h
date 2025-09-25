@@ -13,10 +13,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <vector>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/math.h"
-#include "xenia/ui/vulkan/vulkan_provider.h"
+#include "xenia/ui/vulkan/vulkan_api.h"
 
 namespace xe {
 namespace gpu {
@@ -306,7 +307,7 @@ class DeferredCommandBuffer {
 
   void CmdVkSetScissor(uint32_t first_scissor, uint32_t scissor_count,
                        const VkRect2D* scissors) {
-    const size_t header_size =
+    constexpr size_t header_size =
         xe::align(sizeof(ArgsVkSetScissor), alignof(VkRect2D));
     uint8_t* args_ptr = reinterpret_cast<uint8_t*>(
         WriteCommand(Command::kVkSetScissor,
@@ -345,7 +346,7 @@ class DeferredCommandBuffer {
 
   void CmdVkSetViewport(uint32_t first_viewport, uint32_t viewport_count,
                         const VkViewport* viewports) {
-    const size_t header_size =
+    constexpr size_t header_size =
         xe::align(sizeof(ArgsVkSetViewport), alignof(VkViewport));
     uint8_t* args_ptr = reinterpret_cast<uint8_t*>(
         WriteCommand(Command::kVkSetViewport,

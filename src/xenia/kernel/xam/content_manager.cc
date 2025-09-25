@@ -9,13 +9,11 @@
 
 #include "xenia/kernel/xam/content_manager.h"
 
-#include <array>
-#include <string>
-#include <unordered_set>
-
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/filesystem.h"
+#include "xenia/base/logging.h"
 #include "xenia/base/string.h"
+#include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xfile.h"
@@ -30,6 +28,7 @@ namespace xam {
 
 static const char* kThumbnailFileName = "__thumbnail.png";
 static const char* kGameContentHeaderDirName = "Headers";
+static const char* kSpaFilename = "spa.bin";
 
 static int content_device_id_ = 0;
 
@@ -37,7 +36,9 @@ ContentPackage::ContentPackage(KernelState* kernel_state,
                                const std::string_view root_name,
                                const XCONTENT_AGGREGATE_DATA& data,
                                const std::filesystem::path& package_path)
-    : kernel_state_(kernel_state), root_name_(root_name) {
+    : kernel_state_(kernel_state),
+      root_name_(root_name),
+      license_(cvars::license_mask) {
   device_path_ = fmt::format("\\Device\\Content\\{0}\\", ++content_device_id_);
   content_data_ = data;
 
@@ -57,8 +58,6 @@ ContentPackage::~ContentPackage() {
 
 void ContentPackage::LoadPackageLicenseMask(
     const std::filesystem::path header_path) {
-  license_ = cvars::license_mask;
-
   if (!std::filesystem::exists(header_path)) {
     return;
   }
@@ -241,6 +240,42 @@ std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContent(
   return result;
 }
 
+std::vector<XCONTENT_AGGREGATE_DATA> ContentManager::ListContentODD(
+    const uint32_t device_id, const uint64_t xuid, const uint32_t title_id,
+    const XContentType content_type) const {
+  std::vector<XCONTENT_AGGREGATE_DATA> result;
+
+  auto xuid_str = fmt::format("{:016X}", xuid);
+  auto title_id_str = fmt::format("{:08X}", title_id);
+  auto content_type_str =
+      fmt::format("{:08X}", static_cast<uint32_t>(content_type));
+
+  const std::filesystem::path game_content_path =
+      std::filesystem::path("GAME:") / "content" / xuid_str / title_id_str /
+      content_type_str;
+
+  auto entry = kernel_state_->file_system()->ResolvePath(
+      xe::path_to_utf8(game_content_path));
+
+  if (!entry) {
+    return {};
+  }
+
+  for (const auto& child : entry->children()) {
+    XCONTENT_AGGREGATE_DATA content_data;
+
+    content_data.device_id = device_id;
+    content_data.content_type = content_type;
+    content_data.set_display_name(xe::path_to_utf16(child->name()));
+    content_data.set_file_name(xe::path_to_utf8(child->name()));
+    content_data.title_id = title_id;
+    content_data.xuid = xuid;
+    result.emplace_back(std::move(content_data));
+  }
+
+  return result;
+}
+
 std::unique_ptr<ContentPackage> ContentManager::ResolvePackage(
     const std::string_view root_name, const uint64_t xuid,
     const XCONTENT_AGGREGATE_DATA& data, const uint32_t disc_number) {
@@ -331,7 +366,7 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name,
                                        const XCONTENT_AGGREGATE_DATA& data) {
   auto global_lock = global_critical_region_.Acquire();
 
-  if (open_packages_.count(string_key(root_name))) {
+  if (open_packages_.count(string_key_insensitive(root_name))) {
     // Already content open with this root name.
     return X_ERROR_ALREADY_EXISTS;
   }
@@ -349,7 +384,8 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name,
   auto package = ResolvePackage(root_name, xuid, data);
   assert_not_null(package);
 
-  open_packages_.insert({string_key::create(root_name), package.release()});
+  open_packages_.insert(
+      {string_key_insensitive::create(root_name), package.release()});
 
   return X_ERROR_SUCCESS;
 }
@@ -361,7 +397,7 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
                                      const uint32_t disc_number) {
   auto global_lock = global_critical_region_.Acquire();
 
-  if (open_packages_.count(string_key(root_name))) {
+  if (open_packages_.count(string_key_insensitive(root_name))) {
     // Already content open with this root name.
     return X_ERROR_ALREADY_EXISTS;
   }
@@ -381,7 +417,17 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
 
   content_license = package->GetPackageLicense();
 
-  open_packages_.insert({string_key::create(root_name), package.release()});
+  // Check for SPA file in package. Check it only for DLCs
+  if (data.content_type == XContentType::kMarketplaceContent) {
+    std::string spa_path = fmt::format("{}:\\{}", root_name, kSpaFilename);
+    auto spa_update = kernel_state_->file_system()->ResolvePath(spa_path);
+    if (spa_update) {
+      UpdateSpaData(spa_update);
+    }
+  }
+
+  open_packages_.insert(
+      {string_key_insensitive::create(root_name), package.release()});
 
   return X_ERROR_SUCCESS;
 }
@@ -389,7 +435,9 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
 X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
   auto global_lock = global_critical_region_.Acquire();
 
-  auto it = open_packages_.find(string_key(root_name));
+  // 415607D6 - Uses XamContentCreate with name "save", but XamContentClose with
+  // "SAVE".
+  auto it = open_packages_.find(string_key_insensitive(root_name));
   if (it == open_packages_.end()) {
     return X_ERROR_FILE_NOT_FOUND;
   }
@@ -465,10 +513,11 @@ std::filesystem::path ContentManager::ResolveGameUserContentPath(
 }
 
 bool ContentManager::IsContentOpen(const XCONTENT_AGGREGATE_DATA& data) const {
-  return std::any_of(open_packages_.cbegin(), open_packages_.cend(),
-                     [data](std::pair<string_key, ContentPackage*> content) {
-                       return data == content.second->GetPackageContentData();
-                     });
+  return std::any_of(
+      open_packages_.cbegin(), open_packages_.cend(),
+      [data](std::pair<string_key_insensitive, ContentPackage*> content) {
+        return data == content.second->GetPackageContentData();
+      });
 }
 
 void ContentManager::CloseOpenedFilesFromContent(
@@ -491,6 +540,49 @@ void ContentManager::CloseOpenedFilesFromContent(
       file->ReleaseHandle();
     }
   }
+}
+
+uint64_t ContentManager::GetContentTotalSpace() const {
+  std::error_code ec;
+  const auto drive_stats = std::filesystem::space(root_path_, ec);
+  if (ec) {
+    XELOGW("{}: {} (:08X)", __func__, ec.message(), ec.value());
+    return 0;
+  }
+
+  return drive_stats.capacity;
+}
+
+uint64_t ContentManager::GetContentFreeSpace() const {
+  std::error_code ec;
+  const auto drive_stats = std::filesystem::space(root_path_, ec);
+  if (ec) {
+    XELOGW("{}: {} (:08X)", __func__, ec.message(), ec.value());
+    return 0;
+  }
+
+  return drive_stats.free;
+}
+
+bool ContentManager::UpdateSpaData(vfs::Entry* spa_file_update) {
+  vfs::File* file;
+  if (spa_file_update->Open(vfs::FileAccess::kFileReadData, &file) !=
+      X_STATUS_SUCCESS) {
+    return false;
+  }
+
+  std::vector<uint8_t> data(spa_file_update->size());
+
+  size_t read_bytes = 0;
+  if (file->ReadSync(std::span<uint8_t>(data.data(), spa_file_update->size()),
+                     0, &read_bytes) != X_STATUS_SUCCESS) {
+    return false;
+  }
+
+  xam::SpaInfo new_spa_data(std::span<uint8_t>(data.data(), data.size()));
+  kernel_state_->xam_state()->LoadSpaInfo(&new_spa_data);
+  kernel_state_->emulator()->game_info_database()->Update(&new_spa_data);
+  return true;
 }
 
 }  // namespace xam

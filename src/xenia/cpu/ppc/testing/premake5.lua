@@ -17,6 +17,7 @@ project("xenia-cpu-ppc-tests")
     "xenia-base",
     "xenia-kernel",
     "xenia-patcher",
+    "xenia-hid-skylander",
   })
   files({
     "ppc_testing_main.cc",
@@ -26,7 +27,9 @@ project("xenia-cpu-ppc-tests")
     "*.s",
   })
   filter("files:*.s")
-    flags({"ExcludeFromBuild"})
+    flags({
+      "ExcludeFromBuild",
+    })
   filter("architecture:x86_64")
     links({
       "xenia-cpu-backend-x64",
@@ -39,7 +42,9 @@ project("xenia-cpu-ppc-tests")
     })
 
     -- xenia-base needs this
-    links({"xenia-ui"})
+    links({
+      "xenia-ui",
+    })
 
 if ARCH == "ppc64" or ARCH == "powerpc64" then
 
@@ -60,7 +65,9 @@ project("xenia-cpu-ppc-nativetests")
     "seq_*.s",
   })
   filter("files:instr_*.s", "files:seq_*.s")
-    flags({"ExcludeFromBuild"})
+    flags({
+      "ExcludeFromBuild",
+    })
   filter({})
   buildoptions({
     "-Wa,-mregnames",  -- Tell GAS to accept register names.

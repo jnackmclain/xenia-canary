@@ -7,21 +7,16 @@
  ******************************************************************************
  */
 
+#include <ranges>
+
 #include "xenia/kernel/kernel_state.h"
 
-#include <string>
-
-#include "third_party/fmt/include/fmt/format.h"
-#include "xenia/base/assert.h"
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/logging.h"
-#include "xenia/base/string.h"
-#include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
-#include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_ob.h"
@@ -36,6 +31,9 @@
 #include "third_party/crypto/TinySHA1.hpp"
 
 DEFINE_bool(apply_title_update, true, "Apply title updates.", "Kernel");
+DEFINE_bool(allow_incompatible_title_update, true,
+            "Allow title updates with mismatched signatures to be applied.",
+            "Kernel");
 
 DEFINE_uint32(kernel_build_version, 1888, "Define current kernel version",
               "Kernel");
@@ -45,7 +43,7 @@ DECLARE_string(cl);
 namespace xe {
 namespace kernel {
 
-constexpr uint32_t kDeferredOverlappedDelayMillis = 100;
+constexpr std::chrono::milliseconds kDeferredOverlappedDelayMillis(100);
 
 // This is a global object initialized with the XboxkrnlModule.
 // It references the current kernel state object that all kernel methods should
@@ -65,6 +63,7 @@ KernelState::KernelState(Emulator* emulator)
   processor_ = emulator->processor();
   file_system_ = emulator->file_system();
   xam_state_ = std::make_unique<xam::XamState>(emulator, this);
+  smc_ = std::make_unique<SystemManagementController>();
 
   InitializeKernelGuestGlobals();
   kernel_version_ = KernelVersion(cvars::kernel_build_version);
@@ -122,23 +121,11 @@ uint32_t KernelState::title_id() const {
   return 0;
 }
 
-bool KernelState::is_title_system_type(uint32_t title_id) {
-  if (!title_id) {
-    return true;
-  }
-
-  if ((title_id & 0xFF000000) == 0x58000000u) {
-    return (title_id & 0xFF0000) != 0x410000;  // if 'X' but not 'XA' (XBLA)
-  }
-
-  return (title_id >> 16) == 0xFFFE;
-}
-
-util::XdbfGameData KernelState::title_xdbf() const {
+const std::unique_ptr<xam::SpaInfo> KernelState::title_xdbf() const {
   return module_xdbf(executable_module_);
 }
 
-util::XdbfGameData KernelState::module_xdbf(
+const std::unique_ptr<xam::SpaInfo> KernelState::module_xdbf(
     object_ref<UserModule> exec_module) const {
   assert_not_null(exec_module);
 
@@ -147,11 +134,11 @@ util::XdbfGameData KernelState::module_xdbf(
   if (XSUCCEEDED(exec_module->GetSection(
           fmt::format("{:08X}", exec_module->title_id()).c_str(),
           &resource_data, &resource_size))) {
-    util::XdbfGameData db(memory()->TranslateVirtual(resource_data),
-                          resource_size);
-    return db;
+    return std::make_unique<xam::SpaInfo>(std::span<uint8_t>(
+        memory()->TranslateVirtual(resource_data), resource_size));
   }
-  return util::XdbfGameData(nullptr, resource_size);
+
+  return nullptr;
 }
 
 uint32_t KernelState::AllocateTLS() { return uint32_t(tls_bitmap_.Acquire()); }
@@ -227,6 +214,28 @@ bool KernelState::IsKernelModule(const std::string_view name) {
       return true;
     }
   }
+  return false;
+}
+
+bool KernelState::IsModuleLoaded(const std::string_view name) {
+  if (name.empty()) {
+    return true;
+  }
+
+  for (auto kernel_module : kernel_modules_) {
+    if (kernel_module->Matches(name)) {
+      return true;
+    }
+  }
+
+  auto global_lock = global_critical_region_.Acquire();
+
+  for (auto user_module : user_modules_) {
+    if (user_module->Matches(name)) {
+      return true;
+    }
+  }
+
   return false;
 }
 
@@ -444,9 +453,14 @@ object_ref<UserModule> KernelState::LoadUserModule(
   auto name = xe::utf8::find_name_from_guest_path(raw_name);
   std::string path(raw_name);
   if (name == raw_name) {
-    assert_not_null(executable_module_);
-    path = xe::utf8::join_guest_paths(
-        xe::utf8::find_base_guest_path(executable_module_->path()), name);
+    if (!executable_module_) {
+      path = xe::utf8::join_guest_paths(
+          xe::utf8::find_base_guest_path((*user_modules_.cbegin())->path()),
+          name);
+    } else {
+      path = xe::utf8::join_guest_paths(
+          xe::utf8::find_base_guest_path(executable_module_->path()), name);
+    }
   }
 
   object_ref<UserModule> module;
@@ -534,6 +548,9 @@ X_RESULT KernelState::FinishLoadingUserModule(
         1,  // DLL_PROCESS_ATTACH
         0,  // 0 because always dynamic
     };
+
+    module->is_attached_ = true;
+
     auto thread_state = XThread::GetCurrentThread()->thread_state();
     processor()->Execute(thread_state, module->entry_point(), args,
                          xe::countof(args));
@@ -558,6 +575,13 @@ X_RESULT KernelState::ApplyTitleUpdate(
   }
 
   if (!IsPatchSignatureProper(title_module, patch_module)) {
+    if (!cvars::allow_incompatible_title_update) {
+      XELOGW(
+          "Skipping incompatible title update for {} due to signature mismatch",
+          title_module->name());
+      return X_STATUS_SUCCESS;
+    }
+
     // First module that is loaded is always main executable. That way we can
     // prevent random message spam in case of loading/unloading.
     if (!GetExecutableModule()) {
@@ -596,25 +620,25 @@ const object_ref<UserModule> KernelState::LoadTitleUpdate(
   X_RESULT open_status = content_manager()->OpenContent(
       "UPDATE", 0, *title_update, content_license, disc_number);
 
-  // Use the corresponding patch for the launch module
-  std::filesystem::path patch_xexp;
-
   std::string mount_path = "";
-  file_system()->FindSymbolicLink("game:", mount_path);
-
-  auto is_relative = std::filesystem::relative(module->path(), mount_path);
-
-  if (is_relative.empty()) {
+  if (!file_system()->FindSymbolicLink("game:", mount_path)) {
     return nullptr;
   }
 
-  patch_xexp =
-      is_relative.replace_extension(is_relative.extension().string() + "p");
+  if (!module->path().starts_with(mount_path)) {
+    return nullptr;
+  }
 
   std::string resolved_path = "";
-  file_system()->FindSymbolicLink("UPDATE:", resolved_path);
-  xe::vfs::Entry* patch_entry = kernel_state()->file_system()->ResolvePath(
-      resolved_path + patch_xexp.generic_string());
+  if (!file_system()->FindSymbolicLink("UPDATE:", resolved_path)) {
+    return nullptr;
+  }
+
+  const std::string relative_path =
+      module->path().substr(mount_path.size() + 1) + 'p';
+
+  xe::vfs::Entry* patch_entry =
+      kernel_state()->file_system()->ResolvePath(resolved_path + relative_path);
 
   if (!patch_entry) {
     return nullptr;
@@ -814,9 +838,16 @@ void KernelState::OnThreadExecute(XThread* thread) {
     if (user_module->is_dll_module() && user_module->entry_point()) {
       uint64_t args[] = {
           user_module->handle(),
-          2,  // DLL_THREAD_ATTACH
-          0,  // 0 because always dynamic
+          user_module->is_attached()
+              ? static_cast<uint64_t>(2)   // DLL_THREAD_ATTACH - Used to call
+                                           // DLL for each thread created.
+              : static_cast<uint64_t>(1),  // DLL_PROCESS_ATTACH - Used only
+                                           // once for initialization.
+          0,                               // 0 because always dynamic
       };
+
+      user_module->is_attached_ = true;
+
       processor()->Execute(thread_state, user_module->entry_point(), args,
                            xe::countof(args));
     }
@@ -857,6 +888,19 @@ object_ref<XThread> KernelState::GetThreadByID(uint32_t thread_id) {
   return retain_object(thread);
 }
 
+std::vector<uint32_t> KernelState::GetAllThreadIDs() {
+  auto global_lock = global_critical_region_.Acquire();
+
+  auto thread_ids_view =
+      threads_by_id_ |
+      std::views::transform([](const auto& pair) { return pair.first; });
+
+  std::vector<std::uint32_t> thread_ids(thread_ids_view.begin(),
+                                        thread_ids_view.end());
+
+  return thread_ids;
+}
+
 void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
   auto global_lock = global_critical_region_.Acquire();
   notify_listeners_.push_back(retain_object(listener));
@@ -872,6 +916,15 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
     // XN_SYS_SIGNINCHANGED x2
     listener->EnqueueNotification(kXNotificationSystemSignInChanged, 1);
     listener->EnqueueNotification(kXNotificationSystemSignInChanged, 1);
+
+    listener->EnqueueNotification(kXNotificationSystemTrayStateChanged,
+                                  X_DVD_DISC_STATE::XBOX_360_GAME_DISC);
+  }
+  if (!has_notified_live_startup_ && listener->mask() & kXNotifyLive) {
+    has_notified_live_startup_ = true;
+    listener->EnqueueNotification(kXNotificationLiveConnectionChanged,
+                                  0x80151802L);
+    listener->EnqueueNotification(kXNotificationLiveLinkStateChanged, 0);
   }
 }
 
@@ -1000,8 +1053,8 @@ void KernelState::CompleteOverlappedDeferredEx(
     if (pre_callback) {
       pre_callback();
     }
-    xe::threading::Sleep(
-        std::chrono::milliseconds(kDeferredOverlappedDelayMillis));
+    // 5454082B infinitely loads free roam in netplay without sleep.
+    xe::threading::Sleep(kDeferredOverlappedDelayMillis);
     uint32_t extended_error, length;
     auto result = completion_callback(extended_error, length);
     CompleteOverlappedEx(overlapped_ptr, result, extended_error, length);
@@ -1253,7 +1306,7 @@ void KernelState::InitializeProcess(X_KPROCESS* process, uint32_t type,
   process->unk_19 = unk_19;
   process->unk_1A = unk_1A;
   util::XeInitializeListHead(&process->thread_list, thread_list_guest_ptr);
-  process->unk_0C = 60;
+  process->quantum = 60;
   // doubt any guest code uses this ptr, which i think probably has something to
   // do with the page table
   process->clrdataa_masked_ptr = 0;
@@ -1353,7 +1406,7 @@ void KernelState::InitializeKernelGuestGlobals() {
 
   auto idle_process = memory()->TranslateVirtual<X_KPROCESS*>(GetIdleProcess());
   InitializeProcess(idle_process, X_PROCTYPE_IDLE, 0, 0, 0);
-  idle_process->unk_0C = 0x7F;
+  idle_process->quantum = 0x7F;
   auto system_process =
       memory()->TranslateVirtual<X_KPROCESS*>(GetSystemProcess());
   InitializeProcess(system_process, X_PROCTYPE_SYSTEM, 2, 5, 9);

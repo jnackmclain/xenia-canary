@@ -1,5 +1,8 @@
 name: Windows build
 
+permissions:
+  contents: write
+
 on:
   push:
     paths-ignore:
@@ -48,8 +51,19 @@ on:
   workflow_dispatch:
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: windows-latest
+    env:
+      POWERSHELL_TELEMETRY_OPTOUT: 1
+    steps:
+      - uses: actions/checkout@main
+      - name: Lint
+        run: python xenia-build.py lint --all
+
   build:
     name: Build
+    needs: lint
     runs-on: windows-2025
     env:
       POWERSHELL_TELEMETRY_OPTOUT: 1
@@ -57,16 +71,30 @@ jobs:
       - uses: actions/checkout@main
         with:
           fetch-depth: 0
-      - name: Setup
-        run: .\xb setup
+      - name: Setup submodules
+        shell: pwsh
+        run: |
+          git submodule update --init --depth=1 -j $env:NUMBER_OF_PROCESSORS `
+            (Select-String -CaseSensitive `
+              '(?<=path = )(?!third_party\/(FidelityFX-(CAS|FSR)|premake-(androidndk|cmake|export-compile-commands))).+' `
+              .gitmodules).Matches.Value
       - name: Build
-        run: .\xb build --config=Release --target=src\xenia-app
+        shell: pwsh
+        run: python xenia-build.py build --config=Release --target=src\xenia-app
       - name: Prepare artifacts
         id: prepare_artifacts
+        shell: pwsh
         run: |
-          robocopy . build\bin\Windows\Release                                                                LICENSE /r:0 /w:0
+          foreach ($file in 'build\bin\Windows\Release\xenia_canary.exe','build\bin\Windows\Release\xenia_canary.pdb') {
+            if (-not (Test-Path $file)) { echo "::error::$file missing."; exit 1 }
+            if ((Get-Item $file).Length -le 100000) {
+              echo "::error::$file is too small."
+              exit 1
+            }
+          }
+          robocopy . build\bin\Windows\Release                                                                LICENSE /r:0 /w:0 | Out-Null
           robocopy   build\bin\Windows\Release artifacts\xenia_canary   xenia_canary.exe   xenia_canary.pdb   LICENSE /r:0 /w:0
-          If ($LastExitCode -le 7) { echo "LastExitCode = $LastExitCode";$LastExitCode = 0 }
+          if ($LASTEXITCODE -le 7) { Write-Host "Robocopy exit code = $LASTEXITCODE"; exit 0 } else { exit $LASTEXITCODE }
       - name: Upload xenia canary artifacts
         if: steps.prepare_artifacts.outcome == 'success'
         uses: actions/upload-artifact@main
@@ -77,13 +105,12 @@ jobs:
 
   create-release:
     name: Create release
-    needs: build
+    needs: [lint, build]
     if: |
-      github.repository == 'xenia-canary/xenia-canary' &&
-      github.event.action != 'pull_request' &&
-      github.ref == 'refs/heads/canary_experimental'
+      github.event_name != 'pull_request' &&
+      startsWith(github.ref, 'refs/heads/canary_experimental')
     uses: ./.github/workflows/Create_release.yml
     with:
       os: windows
     secrets:
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}

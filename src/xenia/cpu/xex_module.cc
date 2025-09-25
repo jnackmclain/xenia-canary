@@ -9,8 +9,6 @@
 
 #include "xenia/cpu/xex_module.h"
 
-#include <algorithm>
-
 #include "third_party/fmt/include/fmt/format.h"
 
 #include "xenia/base/byte_order.h"
@@ -18,6 +16,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
+#include "xenia/base/pe_image.h"
 
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/export_resolver.h"
@@ -25,12 +24,12 @@
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xmodule.h"
 
 #include "third_party/crypto/TinySHA1.hpp"
 #include "third_party/crypto/rijndael-alg-fst.c"
 #include "third_party/crypto/rijndael-alg-fst.h"
-#include "third_party/pe/pe_image.h"
 #include "xenia/cpu/ppc/ppc_decode_data.h"
 #include "xenia/cpu/ppc/ppc_instr.h"
 DEFINE_bool(disable_instruction_infocache, false,
@@ -50,10 +49,13 @@ DEFINE_bool(
 
 DECLARE_bool(allow_plugins);
 
-static const uint8_t xe_xex2_retail_key[16] = {
+static constexpr uint8_t xe_xex1_retail_key[16] = {
+    0xA2, 0x6C, 0x10, 0xF7, 0x1F, 0xD9, 0x35, 0xE9,
+    0x8B, 0x99, 0x92, 0x2C, 0xE9, 0x32, 0x15, 0x72};
+static constexpr uint8_t xe_xex2_retail_key[16] = {
     0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3,
     0x40, 0x58, 0x3F, 0xBB, 0x08, 0x96, 0xBF, 0x91};
-static const uint8_t xe_xex2_devkit_key[16] = {
+static constexpr uint8_t xe_xex2_devkit_key[16] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
@@ -506,12 +508,12 @@ int XexModule::ApplyPatch(XexModule* module) {
 }
 
 int XexModule::ReadImage(const void* xex_addr, size_t xex_length,
-                         bool use_dev_key) {
+                         const uint8_t* key) {
   if (!opt_file_format_info()) {
     return 1;
   }
 
-  is_dev_kit_ = use_dev_key;
+  is_dev_kit_ = key[0] == 0x00;
 
   if (is_patch()) {
     // Make a copy of patch data for other XEX's to use with ApplyPatch()
@@ -526,8 +528,7 @@ int XexModule::ReadImage(const void* xex_addr, size_t xex_length,
   memory()->LookupHeap(base_address_)->Reset();
 
   aes_decrypt_buffer(
-      use_dev_key ? xe_xex2_devkit_key : xe_xex2_retail_key,
-      reinterpret_cast<const uint8_t*>(xex_security_info()->aes_key), 16,
+      key, reinterpret_cast<const uint8_t*>(xex_security_info()->aes_key), 16,
       session_key_, 16);
 
   int result_code = 0;
@@ -816,8 +817,8 @@ int XexModule::ReadPEHeaders() {
   const uint8_t* p = memory()->TranslateVirtual(base_address_);
 
   // Verify DOS signature (MZ).
-  auto doshdr = reinterpret_cast<const IMAGE_DOS_HEADER*>(p);
-  if (doshdr->e_magic != IMAGE_DOS_SIGNATURE) {
+  auto doshdr = reinterpret_cast<const XIMAGE_DOS_HEADER*>(p);
+  if (doshdr->e_magic != XIMAGE_DOS_SIGNATURE) {
     XELOGE("PE signature mismatch; likely bad decryption/decompression");
     return 1;
   }
@@ -826,59 +827,35 @@ int XexModule::ReadPEHeaders() {
   p += doshdr->e_lfanew;
 
   // Verify NT signature (PE\0\0).
-  auto nthdr = reinterpret_cast<const IMAGE_NT_HEADERS32*>(p);
-  if (nthdr->Signature != IMAGE_NT_SIGNATURE) {
+  auto nthdr = reinterpret_cast<const XIMAGE_NT_HEADERS32*>(p);
+  if (nthdr->Signature != XIMAGE_NT_SIGNATURE) {
     return 1;
   }
 
   // Verify matches an Xbox PE.
-  const IMAGE_FILE_HEADER* filehdr = &nthdr->FileHeader;
-  if ((filehdr->Machine != IMAGE_FILE_MACHINE_POWERPCBE) ||
-      !(filehdr->Characteristics & IMAGE_FILE_32BIT_MACHINE)) {
+  const XIMAGE_FILE_HEADER* filehdr = &nthdr->FileHeader;
+  if ((filehdr->Machine != XIMAGE_FILE_MACHINE_POWERPCBE) ||
+      !(filehdr->Characteristics & XIMAGE_FILE_32BIT_MACHINE)) {
     return 1;
   }
   // Verify the expected size.
-  if (filehdr->SizeOfOptionalHeader != IMAGE_SIZEOF_NT_OPTIONAL_HEADER) {
+  if (filehdr->SizeOfOptionalHeader != XIMAGE_SIZEOF_NT_OPTIONAL_HEADER) {
     return 1;
   }
 
   // Verify optional header is 32bit.
-  const IMAGE_OPTIONAL_HEADER32* opthdr = &nthdr->OptionalHeader;
-  if (opthdr->Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC) {
+  const XIMAGE_OPTIONAL_HEADER32* opthdr = &nthdr->OptionalHeader;
+  if (opthdr->Magic != XIMAGE_NT_OPTIONAL_HDR32_MAGIC) {
     return 1;
   }
   // Verify subsystem.
-  if (opthdr->Subsystem != IMAGE_SUBSYSTEM_XBOX) {
+  if (opthdr->Subsystem != XIMAGE_SUBSYSTEM_XBOX) {
     return 1;
   }
 
-// Linker version - likely 8+
-// Could be useful for recognizing certain patterns
-// opthdr->MajorLinkerVersion; opthdr->MinorLinkerVersion;
-
-// Data directories of interest:
-// EXPORT           IMAGE_EXPORT_DIRECTORY
-// IMPORT           IMAGE_IMPORT_DESCRIPTOR[]
-// EXCEPTION        IMAGE_CE_RUNTIME_FUNCTION_ENTRY[]
-// BASERELOC
-// DEBUG            IMAGE_DEBUG_DIRECTORY[]
-// ARCHITECTURE     /IMAGE_ARCHITECTURE_HEADER/ ----- import thunks!
-// TLS              IMAGE_TLS_DIRECTORY
-// IAT              Import Address Table ptr
-// opthdr->DataDirectory[IMAGE_DIRECTORY_ENTRY_X].VirtualAddress / .Size
-
-// The macros in pe_image.h don't work with clang, for some reason.
-// offsetof seems to be unable to find OptionalHeader.
-#define offsetof1(type, member) ((std::size_t) & (((type*)0)->member))
-#define IMAGE_FIRST_SECTION1(ntheader)                                   \
-  ((PIMAGE_SECTION_HEADER)((uint8_t*)ntheader +                          \
-                           offsetof1(IMAGE_NT_HEADERS, OptionalHeader) + \
-                           ((PIMAGE_NT_HEADERS)(ntheader))               \
-                               ->FileHeader.SizeOfOptionalHeader))
-
   // Quick scan to determine bounds of sections.
   size_t upper_address = 0;
-  const IMAGE_SECTION_HEADER* sechdr = IMAGE_FIRST_SECTION1(nthdr);
+  const XIMAGE_SECTION_HEADER* sechdr = XIMAGE_FIRST_SECTION(nthdr);
   for (size_t n = 0; n < filehdr->NumberOfSections; n++, sechdr++) {
     const size_t physical_address = opthdr->ImageBase + sechdr->VirtualAddress;
     upper_address =
@@ -886,7 +863,7 @@ int XexModule::ReadPEHeaders() {
   }
 
   // Setup/load sections.
-  sechdr = IMAGE_FIRST_SECTION1(nthdr);
+  sechdr = XIMAGE_FIRST_SECTION(nthdr);
   for (size_t n = 0; n < filehdr->NumberOfSections; n++, sechdr++) {
     PESection section;
     memcpy(section.name, sechdr->Name, sizeof(sechdr->Name));
@@ -971,16 +948,21 @@ bool XexModule::Load(const std::string_view name, const std::string_view path,
 
   // Load in the XEX basefile
   // We'll try using both XEX2 keys to see if any give a valid PE
-  int result_code = ReadImage(xex_addr, xex_length, false);
+  int result_code = ReadImage(xex_addr, xex_length, xe_xex2_retail_key);
   if (result_code) {
     XELOGW("XEX load failed with code {}, trying with devkit encryption key...",
            result_code);
 
-    result_code = ReadImage(xex_addr, xex_length, true);
+    result_code = ReadImage(xex_addr, xex_length, xe_xex2_devkit_key);
     if (result_code) {
-      XELOGE("XEX load failed with code {}, tried both encryption keys",
+      XELOGE("XEX load failed with code {}, trying with xex1 encryption key...",
              result_code);
-      return false;
+
+      result_code = ReadImage(xex_addr, xex_length, xe_xex1_retail_key);
+      if (result_code) {
+        XELOGE("XEX load failed with code {}", result_code);
+        return false;
+      }
     }
   }
 
@@ -1081,6 +1063,15 @@ bool XexModule::LoadContinue() {
                   opt_import_libraries->string_table.count);
       assert_not_null(string_table[library_name_index]);
       auto library_name = std::string(string_table[library_name_index]);
+
+      if (!kernel_state_->IsModuleLoaded(library_name)) {
+        if (auto module = kernel_state_->LoadUserModule(library_name)) {
+          if (kernel_state_->FinishLoadingUserModule(module, false)) {
+            library_name = module->path();
+          }
+        }
+      }
+
       SetupLibraryImports(library_name, library);
       library_offset += library->size;
     }
@@ -1136,15 +1127,13 @@ void XexModule::Precompile() {
                                 high_code);
   final_image_sha_.finalize(image_sha_bytes_);
 
-  char fmtbuf[20];
+  image_sha_str_.clear();
+  for (unsigned i = 0; i < sizeof(image_sha_bytes_); ++i) {
+    image_sha_str_ += fmt::format("{:02X}", image_sha_bytes_[i]);
+  }
 
-  for (unsigned i = 0; i < 20; ++i) {
-#ifdef XE_PLATFORM_WIN32
-    sprintf_s(fmtbuf, "%X", image_sha_bytes_[i]);
-#else
-    snprintf(fmtbuf, sizeof(fmtbuf), "%X", image_sha_bytes_[i]);
-#endif
-    image_sha_str_ += &fmtbuf[0];
+  if (image_sha_str_.size() != sizeof(image_sha_bytes_) * 2) {
+    XELOGE("XEX hash is the wrong length!");
   }
 
   // Find __savegprlr_* and __restgprlr_* and the others.
@@ -1505,13 +1494,13 @@ std::vector<uint32_t> XexModule::PreanalyzeCode() {
     uint32_t* range_end = (uint32_t*)memory()->TranslateVirtual(
         high_8_aligned);  // align down to multiple of 8
 
-    const uint8_t mfspr_r12_lr[4] = {0x7D, 0x88, 0x02, 0xA6};
+    constexpr uint8_t mfspr_r12_lr[4] = {0x7D, 0x88, 0x02, 0xA6};
 
     // a blr instruction, with 4 zero bytes afterwards to pad the next address
     // to 8 byte alignment
     // if we see this prior to our address, we can assume we are a function
     // start
-    const uint8_t blr[4] = {0x4E, 0x80, 0x0, 0x20};
+    constexpr uint8_t blr[4] = {0x4E, 0x80, 0x0, 0x20};
 
     uint32_t blr32 = *reinterpret_cast<const uint32_t*>(&blr[0]);
 
@@ -1631,7 +1620,7 @@ bool XexModule::FindSaveRest() {
   // special codegen.
   // __savegprlr_14 to __savegprlr_31
   // __restgprlr_14 to __restgprlr_31
-  static const uint32_t gprlr_code_values[] = {
+  static constexpr uint32_t gprlr_code_values[] = {
       0x68FFC1F9,  // __savegprlr_14
       0x70FFE1F9,  // __savegprlr_15
       0x78FF01FA,  // __savegprlr_16
@@ -1673,7 +1662,7 @@ bool XexModule::FindSaveRest() {
   };
   // __savefpr_14 to __savefpr_31
   // __restfpr_14 to __restfpr_31
-  static const uint32_t fpr_code_values[] = {
+  static constexpr uint32_t fpr_code_values[] = {
       0x70FFCCD9,  // __savefpr_14
       0x78FFECD9,  // __savefpr_15
       0x80FF0CDA,  // __savefpr_16
@@ -1717,7 +1706,7 @@ bool XexModule::FindSaveRest() {
   // __savevmx_64 to __savevmx_127
   // __restvmx_14 to __restvmx_31
   // __restvmx_64 to __restvmx_127
-  static const uint32_t vmx_code_values[] = {
+  static constexpr uint32_t vmx_code_values[] = {
       0xE0FE6039,  // __savevmx_14
       0xCE61CB7D, 0xF0FE6039, 0xCE61EB7D, 0x00FF6039, 0xCE610B7E, 0x10FF6039,
       0xCE612B7E, 0x20FF6039, 0xCE614B7E, 0x30FF6039, 0xCE616B7E, 0x40FF6039,

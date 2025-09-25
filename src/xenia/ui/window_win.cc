@@ -9,10 +9,6 @@
 
 #include "xenia/ui/window_win.h"
 
-#include <algorithm>
-#include <memory>
-#include <string>
-
 #include "xenia/base/assert.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
@@ -447,7 +443,7 @@ void Win32Window::LoadAndApplyIcon(const void* buffer, size_t size,
     // specifies.
   } else {
     new_icon = CreateIconFromResourceEx(
-        static_cast<PBYTE>(const_cast<void*>(buffer)), DWORD(size), TRUE,
+        static_cast<PBYTE>(const_cast<void*>(buffer)), DWORD(size), true,
         0x00030000, 0, 0, LR_DEFAULTCOLOR | LR_DEFAULTSIZE);
     if (!new_icon) {
       return;
@@ -547,7 +543,7 @@ std::unique_ptr<Surface> Win32Window::CreateSurfaceImpl(
   return nullptr;
 }
 
-void Win32Window::RequestPaintImpl() { InvalidateRect(hwnd_, nullptr, FALSE); }
+void Win32Window::RequestPaintImpl() { InvalidateRect(hwnd_, nullptr, false); }
 
 BOOL Win32Window::AdjustWindowRectangle(RECT& rect, DWORD style, BOOL menu,
                                         DWORD ex_style, UINT dpi) const {
@@ -567,7 +563,7 @@ BOOL Win32Window::AdjustWindowRectangle(RECT& rect, DWORD style, BOOL menu,
 
 BOOL Win32Window::AdjustWindowRectangle(RECT& rect) const {
   if (!hwnd_) {
-    return FALSE;
+    return false;
   }
   return AdjustWindowRectangle(rect, GetWindowLong(hwnd_, GWL_STYLE),
                                BOOL(GetMainMenu() != nullptr),
@@ -1156,12 +1152,12 @@ LRESULT Win32Window::WndProc(HWND hWnd, UINT message, WPARAM wParam,
             }
             if (cursor_currently_auto_hidden_) {
               SetCursor(nullptr);
-              return TRUE;
+              return true;
             }
           } break;
           case CursorVisibility::kHidden:
             SetCursor(nullptr);
-            return TRUE;
+            return true;
           default:
             break;
         }

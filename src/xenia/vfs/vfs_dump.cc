@@ -7,10 +7,6 @@
  ******************************************************************************
  */
 
-#include <queue>
-#include <string>
-#include <vector>
-
 #include "xenia/base/console_app_main.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/literals.h"
@@ -44,7 +40,10 @@ int vfs_dump_main(const std::vector<std::string>& args) {
     XELOGE("Failed to initialize device");
     return 1;
   }
-  return VirtualFileSystem::ExtractContentFiles(device.get(), base_path);
+
+  uint64_t progress = 0;
+  return VirtualFileSystem::ExtractContentFiles(device.get(), base_path,
+                                                progress);
 }
 
 }  // namespace vfs

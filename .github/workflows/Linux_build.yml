@@ -1,5 +1,9 @@
 name: Linux build
 
+# Allow release publishing from this workflow
+permissions:
+  contents: write
+
 on:
   push:
     paths-ignore:
@@ -7,13 +11,14 @@ on:
       - '.drone.star'
       - '.gitattributes'
       - '.gitignore'
-      - '.gdbinit'
       - '.github/*'
       - '.github/workflows/Windows_build.yml'
       - '.github/*_TEMPLATE/**'
+      - '*.bat'
       - '*.md'
-      - '*.yml'
+      - '*.ps1'
       - '*.txt'
+      - '*.yml'
       - 'docs/**'
       - 'src/**/*_windows.*'
       - 'src/**/*_android.*'
@@ -25,13 +30,14 @@ on:
       - '.drone.star'
       - '.gitattributes'
       - '.gitignore'
-      - '.gdbinit'
       - '.github/*'
       - '.github/workflows/Windows_build.yml'
       - '.github/*_TEMPLATE/**'
+      - '*.bat'
       - '*.md'
-      - '*.yml'
+      - '*.ps1'
       - '*.txt'
+      - '*.yml'
       - 'docs/**'
       - 'src/**/*_windows.*'
       - 'src/**/*_android.*'
@@ -40,36 +46,81 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build (LLVM ${{ matrix.LLVM_VERSION }})
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    outputs:
+      UBUNTU_BASE: ${{ steps.setup.outputs.UBUNTU_BASE }}
+    steps:
+      - uses: actions/checkout@main
+      - name: Setup
+        id: setup
+        env:
+          LLVM_VERSION: 19 # Keep in sync with Windows if upstream does
+        run: |
+          UBUNTU_BASE=$(lsb_release -cs)
+          echo "UBUNTU_BASE=$UBUNTU_BASE" >> "$GITHUB_OUTPUT"
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          sudo apt-add-repository "deb http://apt.llvm.org/${UBUNTU_BASE}/ llvm-toolchain-${UBUNTU_BASE}-$LLVM_VERSION main"
+          sudo apt-get -y update
+          sudo apt-get -y install clang-format-$LLVM_VERSION
+      - name: Lint
+        run: ./xenia-build.py lint --all
+
+  build-clang:
+    name: Build (Clang ${{ matrix.LLVM_VERSION }})
+    needs: lint
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        LLVM_VERSION: [19]
+        LLVM_VERSION: [20]
     steps:
       - uses: actions/checkout@main
         with:
           fetch-depth: 0
+
+      - uses: actions/cache@main
+        id: cache
+        with:
+          key: ${{ hashFiles('tools/build/bin/premake5.exe') }}
+          path: tools/build/bin/premake5
+
       - name: Setup
+        env:
+          UBUNTU_BASE: ${{ needs.lint.outputs.UBUNTU_BASE }}
         run: |
-          UBUNTU_BASE=jammy
+          # Default UBUNTU_BASE if coming from a reused artifact / missing outputs
+          if [ -z "$UBUNTU_BASE" ]; then UBUNTU_BASE=$(lsb_release -cs); fi
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
           sudo apt-add-repository "deb http://apt.llvm.org/${UBUNTU_BASE}/ llvm-toolchain-${UBUNTU_BASE}-${{ matrix.LLVM_VERSION }} main"
           sudo apt-get -y update
-          sudo apt-get -y install mesa-vulkan-drivers valgrind libc++-dev libc++abi-dev libgtk-3-dev libsdl2-dev libvulkan-dev libx11-xcb-dev clang-${{ matrix.LLVM_VERSION }} llvm-${{ matrix.LLVM_VERSION }} ninja-build
-          ./xb setup
+          sudo apt-get -y install mesa-vulkan-drivers valgrind libc++-dev libc++abi-dev libgtk-3-dev libsdl2-dev libvulkan-dev libx11-xcb-dev clang-${{ matrix.LLVM_VERSION }} ninja-build
+          # Init all submodules except the excluded third_party ones
+          git submodule update --init --depth=1 -j"$(getconf _NPROCESSORS_ONLN)" $(grep -oP '(?<=path = )(?!third_party\/(DirectXShaderCompiler|FidelityFX-(CAS|FSR)|premake-(androidndk|export-compile-commands))).+' .gitmodules)
+          if [ '${{ steps.cache.outputs.cache-hit }}' != 'true' ]; then
+            ./xenia-build.py premake
+            cp third_party/premake-core/bin/release/premake5 tools/build/bin
+          fi
+
       - name: Build
         env:
           CC: clang-${{ matrix.LLVM_VERSION }}
           CXX: clang++-${{ matrix.LLVM_VERSION }}
-          AR: llvm-ar-${{ matrix.LLVM_VERSION }}
-        run: ./xb build --config=Release
+        run: ./xenia-build.py build --config=Release
+
       - name: Prepare artifacts
         id: prepare_artifacts
         run: |
+          binary=build/bin/Linux/Release/xenia_canary
+          if [ "$(stat -c%s "$binary")" -le 100000 ]; then
+            echo "::error::Binary is too small."
+            exit 1
+          fi
+          chmod +x "$binary"
           mkdir -p artifacts
-          cp -r build/bin/Linux/Release/xenia_canary LICENSE artifacts
+          XZ_OPT=-e9 tar cJvpf artifacts/xenia_canary_linux.tar.xz "$binary" LICENSE
+
       - name: Upload xenia canary artifacts
         if: steps.prepare_artifacts.outcome == 'success'
         uses: actions/upload-artifact@main
@@ -78,15 +129,57 @@ jobs:
           path: artifacts
           if-no-files-found: error
 
+  # Optional GCC build (kept commented to mirror upstream)
+  # build-gcc:
+  #   name: Build (GCC ${{ matrix.GCC_VERSION }})
+  #   needs: lint
+  #   runs-on: ubuntu-24.04
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       GCC_VERSION: [14]
+  #   steps:
+  #     - uses: actions/checkout@main
+  #       with:
+  #         fetch-depth: 0
+  #     - name: Setup
+  #       run: |
+  #         sudo apt-get -y update
+  #         sudo apt-get -y install mesa-vulkan-drivers valgrind libc++-dev libc++abi-dev libgtk-3-dev libsdl2-dev libvulkan-dev libx11-xcb-dev g++-${{ matrix.GCC_VERSION }}
+  #         ./xenia-build.py setup
+  #     - name: Build
+  #       env:
+  #         CC: gcc-${{ matrix.GCC_VERSION }}
+  #         CXX: g++-${{ matrix.GCC_VERSION }}
+  #       run: ./xenia-build.py build --config=Release
+  #     - name: Prepare artifacts
+  #       id: prepare_artifacts
+  #       run: |
+  #         if [ "$(stat -c %s build/bin/Linux/Release/xenia_canary)" -le 100000 ]; then
+  #           echo "::error::Binary is too small."
+  #           exit 1
+  #         fi
+  #         mkdir -p artifacts
+  #         cp -r build/bin/Linux/Release/xenia_canary LICENSE artifacts
+  #     - name: Upload xenia canary artifacts
+  #       if: steps.prepare_artifacts.outcome == 'success'
+  #       uses: actions/upload-artifact@main
+  #       with:
+  #         name: xenia_canary_linux_gcc
+  #         path: artifacts
+  #         if-no-files-found: error
+
   create-release:
     name: Create release
-    needs: build
+    # Run on upstream canary_experimental, and ALSO on forks on the same branch.
+    needs: [lint, build-clang] # , build-gcc
     if: |
-      github.repository == 'xenia-canary/xenia-canary' &&
-      github.event.action != 'pull_request' &&
-      github.ref == 'refs/heads/canary_experimental'
+      github.event_name != 'pull_request' &&
+      startsWith(github.ref, 'refs/heads/canary_experimental')
     uses: ./.github/workflows/Create_release.yml
     with:
       os: linux
     secrets:
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      # Prefer a dedicated PAT if present; otherwise fall back to the repo's GITHUB_TOKEN,
+      # which works for forks publishing releases in their own repo.
+      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}

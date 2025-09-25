@@ -11,11 +11,11 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <locale>
-#include <numeric>
-#include <tuple>
 
-#define UTF_CPP_CPLUSPLUS 202002L
+// https://github.com/nemtrif/utfcpp/issues/85
+#if defined(_MSVC_LANG) && _MSVC_LANG > __cplusplus
+#define UTF_CPP_CPLUSPLUS _MSVC_LANG
+#endif
 #include "third_party/utfcpp/source/utf8.h"
 
 namespace utfcpp = utf8;
@@ -82,10 +82,10 @@ std::string upper_ascii(const std::string_view view) {
 
 template <bool LOWER>
 inline size_t hash_fnv1a(const std::string_view view) {
-  const size_t offset_basis = 0xCBF29CE484222325ull;
+  constexpr size_t offset_basis = 0xCBF29CE484222325ull;
   // chrispy: constant capture errors on clang
   auto work = [](size_t hash, uint8_t byte_of_data) {
-    const size_t prime = 0x00000100000001B3ull;
+    constexpr size_t prime = 0x00000100000001B3ull;
     hash ^= byte_of_data;
     hash *= prime;
     return hash;

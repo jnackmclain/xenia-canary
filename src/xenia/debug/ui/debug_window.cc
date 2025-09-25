@@ -9,9 +9,7 @@
 
 #include "xenia/debug/ui/debug_window.h"
 
-#include <algorithm>
 #include <cinttypes>
-#include <utility>
 
 #include "third_party/capstone/include/capstone/capstone.h"
 #include "third_party/capstone/include/capstone/x86.h"
@@ -55,7 +53,7 @@ void DebugWindow::DebugDialog::OnDraw(ImGuiIO& io) {
   debug_window_.DrawFrame(io);
 }
 
-static const std::string kBaseTitle = "Xenia Debugger";
+static constexpr std::string_view kBaseTitle = "Xenia Debugger";
 
 DebugWindow::DebugWindow(Emulator* emulator,
                          xe::ui::WindowedAppContext& app_context)
@@ -381,7 +379,7 @@ void DebugWindow::DrawSourcePane() {
   ImGui::EndGroup();
 
   ImGui::BeginGroup();
-  ImGui::PushButtonRepeat(true);
+  ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, true);
   bool can_step = !cache_.is_running && state_.thread_info;
   if (ImGui::ButtonEx("Step PPC", ImVec2(0, 0),
                       can_step ? 0 : ImGuiItemFlags_Disabled)) {
@@ -390,7 +388,7 @@ void DebugWindow::DrawSourcePane() {
       processor_->StepGuestInstruction(state_.thread_info->thread_id);
     }
   }
-  ImGui::PopButtonRepeat();
+  ImGui::PopItemFlag();
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip(
         "Step one PPC instruction on the current thread (hold for many).");
@@ -400,7 +398,7 @@ void DebugWindow::DrawSourcePane() {
     // Only show x64 step button if we have x64 visible.
     ImGui::Dummy(ImVec2(4, 0));
     ImGui::SameLine();
-    ImGui::PushButtonRepeat(true);
+    ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, true);
     if (ImGui::ButtonEx("Step x64", ImVec2(0, 0),
                         can_step ? 0 : ImGuiItemFlags_Disabled)) {
       // By enabling the button when stepping we allow repeat behavior.
@@ -408,7 +406,7 @@ void DebugWindow::DrawSourcePane() {
         processor_->StepHostInstruction(state_.thread_info->thread_id);
       }
     }
-    ImGui::PopButtonRepeat();
+    ImGui::PopItemFlag();
     if (ImGui::IsItemHovered()) {
       ImGui::SetTooltip(
           "Step one x64 instruction on the current thread (hold for many).");
@@ -1460,7 +1458,7 @@ void DebugWindow::UpdateCache() {
   auto object_table = kernel_state->object_table();
 
   app_context_.CallInUIThread([this]() {
-    std::string title = kBaseTitle;
+    std::string title = std::string(kBaseTitle);
     switch (processor_->execution_state()) {
       case cpu::ExecutionState::kEnded:
         title += " (ended)";

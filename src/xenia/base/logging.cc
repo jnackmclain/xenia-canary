@@ -10,11 +10,8 @@
 #include "xenia/base/logging.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdlib>
 #include <cstring>
-#include <mutex>
-#include <vector>
 
 #include "third_party/disruptorplus/include/disruptorplus/multi_threaded_claim_strategy.hpp"
 #include "third_party/disruptorplus/include/disruptorplus/ring_buffer.hpp"
@@ -244,12 +241,12 @@ class Logger {
   }
 
  private:
-  static const size_t kBufferSize = 8_MiB;
+  static constexpr size_t kBufferSize = 8_MiB;
   uint8_t buffer_[kBufferSize];
 
-  static const size_t kBlockSize = 256;
-  static const size_t kBlockCount = kBufferSize / kBlockSize;
-  static const size_t kBlockIndexMask = kBlockCount - 1;
+  static constexpr size_t kBlockSize = 256;
+  static constexpr size_t kBlockCount = kBufferSize / kBlockSize;
+  static constexpr size_t kBlockIndexMask = kBlockCount - 1;
 
   static const size_t kClaimStrategyFootprint =
       sizeof(std::atomic<dp::sequence_t>[kBlockCount]);
@@ -353,14 +350,14 @@ class Logger {
                     ? line_range.second[line_range.second_length - 1]
                     : line_range.first[line_range.first_length - 1];
             if (last_char != '\n') {
-              const char suffix[1] = {'\n'};
+              constexpr char suffix[1] = {'\n'};
               Write(suffix, 1);
             }
 
             rb.EndRead(std::move(line_range));
           } else {
             // Always ensure there is a newline.
-            const char suffix[1] = {'\n'};
+            constexpr char suffix[1] = {'\n'};
             Write(suffix, 1);
           }
 
@@ -472,16 +469,18 @@ void ShutdownLogging() {
 }
 
 static int g_saved_loglevel = static_cast<int>(LogLevel::Disabled);
-void logging::internal::ToggleLogLevel() {
+void logging::ToggleLogLevel() {
   auto swap = g_saved_loglevel;
 
   g_saved_loglevel = cvars::log_level;
   cvars::log_level = swap;
 }
-bool logging::internal::ShouldLog(LogLevel log_level, uint32_t log_mask) {
+
+bool logging::ShouldLog(LogLevel log_level, uint32_t log_mask) {
   return static_cast<int32_t>(log_level) <= cvars::log_level &&
          (log_mask & cvars::log_mask) == 0;
 }
+
 uint32_t logging::internal::GetLogLevel() { return cvars::log_level; }
 
 std::pair<char*, size_t> logging::internal::GetThreadBuffer() {
@@ -499,7 +498,7 @@ void logging::internal::AppendLogLine(LogLevel log_level,
 
 void logging::AppendLogLine(LogLevel log_level, const char prefix_char,
                             const std::string_view str, uint32_t log_mask) {
-  if (!internal::ShouldLog(log_level, log_mask) || !str.size()) {
+  if (!ShouldLog(log_level, log_mask) || !str.size()) {
     return;
   }
   logger_->AppendLine(xe::threading::current_thread_id(), prefix_char,

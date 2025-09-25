@@ -7,9 +7,6 @@
  ******************************************************************************
  */
 
-#include <algorithm>
-#include <string>
-
 #include <X11/Xlib-xcb.h>
 #include <gdk/gdkx.h>
 #include <xcb/xcb.h>
@@ -67,14 +64,14 @@ bool GTKWindow::OpenImpl() {
   const auto* main_menu = dynamic_cast<const GTKMenuItem*>(GetMainMenu());
   GtkWidget* main_menu_widget = main_menu ? main_menu->handle() : nullptr;
   if (main_menu_widget) {
-    gtk_box_pack_start(GTK_BOX(box_), main_menu_widget, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box_), main_menu_widget, false, false, 0);
   }
 
   // Create the drawing area for creating the surface for, which will be the
   // client area of the window occupying all the window space not taken by the
   // main menu.
   drawing_area_ = gtk_drawing_area_new();
-  gtk_box_pack_end(GTK_BOX(box_), drawing_area_, TRUE, TRUE, 0);
+  gtk_box_pack_end(GTK_BOX(box_), drawing_area_, true, true, 0);
   // The desired size is the client (drawing) area size. Let GTK auto-size the
   // entire window around it (as well as the width of the menu actually if it
   // happens to be bigger - the desired size in the Window will be updated later
@@ -186,7 +183,7 @@ void GTKWindow::ApplyNewFullscreen() {
       return;
     }
     if (main_menu_widget) {
-      gtk_box_pack_start(GTK_BOX(box_), main_menu_widget, FALSE, FALSE, 0);
+      gtk_box_pack_start(GTK_BOX(box_), main_menu_widget, false, false, 0);
       if (destruction_receiver.IsWindowDestroyedOrClosed()) {
         if (!destruction_receiver.IsWindowDestroyed()) {
           EndBatchedSizeUpdate(destruction_receiver);
@@ -249,7 +246,7 @@ void GTKWindow::ApplyNewMainMenu(MenuItem* old_main_menu) {
     return;
   }
   GtkWidget* new_main_menu_widget = new_main_menu->handle();
-  gtk_box_pack_start(GTK_BOX(box_), new_main_menu_widget, FALSE, FALSE, 0);
+  gtk_box_pack_start(GTK_BOX(box_), new_main_menu_widget, false, false, 0);
   if (destruction_receiver.IsWindowDestroyedOrClosed() || IsFullscreen()) {
     if (!destruction_receiver.IsWindowDestroyed()) {
       EndBatchedSizeUpdate(destruction_receiver);
@@ -485,6 +482,8 @@ VirtualKey GTKWindow::TranslateVirtualKey(guint keyval) {
       return VirtualKey::kRShift;
     case GDK_KEY_space:
       return VirtualKey::kSpace;
+    case GDK_KEY_Caps_Lock:
+      return VirtualKey::kCapital;
     default:
       XELOGW("Unhandled key code: {}", keyval);
       return VirtualKey(keyval);
@@ -572,18 +571,34 @@ bool GTKWindow::HandleKeyboard(
   bool ctrl_pressed = modifiers & GDK_CONTROL_MASK;
   bool alt_pressed = modifiers & GDK_META_MASK;
   bool super_pressed = modifiers & GDK_SUPER_MASK;
-  uint32_t key_char = gdk_keyval_to_unicode(event->keyval);
-  KeyEvent e(this, TranslateVirtualKey(event->keyval), 1,
-             event->type == GDK_KEY_RELEASE, shift_pressed, ctrl_pressed,
-             alt_pressed, super_pressed);
+
+  // Translate GTK to VK
+  VirtualKey vk = TranslateVirtualKey(event->keyval);
+  uint32_t unicode_char = gdk_keyval_to_unicode(event->keyval);
+
+  bool is_key_pressed = false;
+
+  // Backspace has unicode value but is not printable therefore we want
+  // OnKeyDown not OnKeyChar
+  if (unicode_char > 0) {
+    if (std::isprint(unicode_char)) {
+      is_key_pressed = true;
+      vk = static_cast<VirtualKey>(unicode_char);
+    }
+  }
+
+  KeyEvent e(this, vk, 1, event->type == GDK_KEY_RELEASE, shift_pressed,
+             ctrl_pressed, alt_pressed, super_pressed);
   switch (event->type) {
     case GDK_KEY_PRESS:
-      OnKeyDown(e, destruction_receiver);
-      if (destruction_receiver.IsWindowDestroyedOrClosed()) {
-        return e.is_handled();
-      }
-      if (key_char > 0) {
+      if (is_key_pressed) {
         OnKeyChar(e, destruction_receiver);
+      } else {
+        OnKeyDown(e, destruction_receiver);
+
+        if (destruction_receiver.IsWindowDestroyedOrClosed()) {
+          return e.is_handled();
+        }
       }
       break;
     case GDK_KEY_RELEASE:
@@ -711,14 +726,14 @@ gboolean GTKWindow::DrawHandler(GtkWidget* widget, cairo_t* cr,
                                 gpointer user_data) {
   auto* window = static_cast<GTKWindow*>(user_data);
   if (!window || widget != window->drawing_area_) {
-    return FALSE;
+    return false;
   }
   if (window->batched_size_update_depth_) {
     window->batched_size_update_contained_draw_ = true;
   } else {
     window->OnPaint();
   }
-  return TRUE;
+  return true;
 }
 
 std::unique_ptr<ui::MenuItem> MenuItem::Create(Type type,

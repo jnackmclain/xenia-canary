@@ -9,13 +9,8 @@
 
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
 
-#include <algorithm>
-#include <array>
 #include <cstdint>
 #include <cstring>
-#include <iterator>
-#include <tuple>
-#include <utility>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/byte_order.h"
@@ -36,7 +31,6 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/ui/vulkan/vulkan_presenter.h"
-#include "xenia/ui/vulkan/vulkan_provider.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
 
 DECLARE_bool(clear_memory_page_state);
@@ -54,18 +48,18 @@ namespace shaders {
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/fullscreen_cw_vs.h"
 }  // namespace shaders
 
-const VkDescriptorPoolSize
+constexpr VkDescriptorPoolSize
     VulkanCommandProcessor::kDescriptorPoolSizeUniformBuffer = {
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         SpirvShaderTranslator::kConstantBufferCount*
             kLinkedTypeDescriptorPoolSetCount};
 
-const VkDescriptorPoolSize
+constexpr VkDescriptorPoolSize
     VulkanCommandProcessor::kDescriptorPoolSizeStorageBuffer = {
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kLinkedTypeDescriptorPoolSetCount};
 
 // 2x descriptors for texture images because of unsigned and signed bindings.
-const VkDescriptorPoolSize
+constexpr VkDescriptorPoolSize
     VulkanCommandProcessor::kDescriptorPoolSizeTextures[2] = {
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
          2 * kLinkedTypeDescriptorPoolSetCount},
@@ -77,18 +71,21 @@ VulkanCommandProcessor::VulkanCommandProcessor(
     : CommandProcessor(graphics_system, kernel_state),
       deferred_command_buffer_(*this),
       transient_descriptor_allocator_uniform_buffer_(
-          *static_cast<const ui::vulkan::VulkanProvider*>(
-              graphics_system->provider()),
+          static_cast<const ui::vulkan::VulkanProvider*>(
+              graphics_system->provider())
+              ->vulkan_device(),
           &kDescriptorPoolSizeUniformBuffer, 1,
           kLinkedTypeDescriptorPoolSetCount),
       transient_descriptor_allocator_storage_buffer_(
-          *static_cast<const ui::vulkan::VulkanProvider*>(
-              graphics_system->provider()),
+          static_cast<const ui::vulkan::VulkanProvider*>(
+              graphics_system->provider())
+              ->vulkan_device(),
           &kDescriptorPoolSizeStorageBuffer, 1,
           kLinkedTypeDescriptorPoolSetCount),
       transient_descriptor_allocator_textures_(
-          *static_cast<const ui::vulkan::VulkanProvider*>(
-              graphics_system->provider()),
+          static_cast<const ui::vulkan::VulkanProvider*>(
+              graphics_system->provider())
+              ->vulkan_device(),
           kDescriptorPoolSizeTextures,
           uint32_t(xe::countof(kDescriptorPoolSizeTextures)),
           kLinkedTypeDescriptorPoolSetCount) {}
@@ -140,11 +137,11 @@ bool VulkanCommandProcessor::SetupContext() {
     return false;
   }
 
-  const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-  VkDevice device = provider.device();
-  const ui::vulkan::VulkanProvider::DeviceInfo& device_info =
-      provider.device_info();
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
+  const ui::vulkan::VulkanDevice::Properties& device_properties =
+      vulkan_device->properties();
 
   // The unconditional inclusion of the vertex shader stage also covers the case
   // of manual index / factor buffer fetch (the system constants and the shared
@@ -153,12 +150,12 @@ bool VulkanCommandProcessor::SetupContext() {
   guest_shader_pipeline_stages_ = VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
   guest_shader_vertex_stages_ = VK_SHADER_STAGE_VERTEX_BIT;
-  if (device_info.tessellationShader) {
+  if (device_properties.tessellationShader) {
     guest_shader_pipeline_stages_ |=
         VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;
     guest_shader_vertex_stages_ |= VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
   }
-  if (!device_info.vertexPipelineStoresAndAtomics) {
+  if (!device_properties.vertexPipelineStoresAndAtomics) {
     // For memory export from vertex shaders converted to compute shaders.
     guest_shader_pipeline_stages_ |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
     guest_shader_vertex_stages_ |= VK_SHADER_STAGE_COMPUTE_BIT;
@@ -167,10 +164,10 @@ bool VulkanCommandProcessor::SetupContext() {
   // 16384 is bigger than any single uniform buffer that Xenia needs, but is the
   // minimum maxUniformBufferRange, thus the safe minimum amount.
   uniform_buffer_pool_ = std::make_unique<ui::vulkan::VulkanUploadBufferPool>(
-      provider, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      vulkan_device, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
       xe::align(std::max(ui::GraphicsUploadBufferPool::kDefaultPageSize,
                          size_t(16384)),
-                size_t(device_info.minUniformBufferOffsetAlignment)));
+                size_t(device_properties.minUniformBufferOffsetAlignment)));
 
   // Descriptor set layouts that don't depend on the setup of other subsystems.
   VkShaderStageFlags guest_shader_stages =
@@ -204,9 +201,10 @@ bool VulkanCommandProcessor::SetupContext() {
       [SpirvShaderTranslator::kConstantBufferSystem]
           .stageFlags =
       guest_shader_stages |
-      (device_info.tessellationShader ? VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
-                                      : 0) |
-      (device_info.geometryShader ? VK_SHADER_STAGE_GEOMETRY_BIT : 0);
+      (device_properties.tessellationShader
+           ? VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT
+           : 0) |
+      (device_properties.geometryShader ? VK_SHADER_STAGE_GEOMETRY_BIT : 0);
   descriptor_set_layout_bindings_constants
       [SpirvShaderTranslator::kConstantBufferFloatVertex]
           .stageFlags = guest_shader_vertex_stages_;
@@ -285,7 +283,7 @@ bool VulkanCommandProcessor::SetupContext() {
 
   uint32_t shared_memory_binding_count_log2 =
       SpirvShaderTranslator::GetSharedMemoryStorageBufferCountLog2(
-          device_info.maxStorageBufferRange);
+          device_properties.maxStorageBufferRange);
   uint32_t shared_memory_binding_count = UINT32_C(1)
                                          << shared_memory_binding_count_log2;
 
@@ -489,14 +487,14 @@ bool VulkanCommandProcessor::SetupContext() {
         &gamma_ramp_host_visible_buffer_memory_requirements);
     uint32_t gamma_ramp_host_visible_buffer_memory_types =
         gamma_ramp_host_visible_buffer_memory_requirements.memoryTypeBits &
-        (device_info.memory_types_device_local &
-         device_info.memory_types_host_visible);
+        (vulkan_device->memory_types().device_local &
+         vulkan_device->memory_types().host_visible);
     VkMemoryAllocateInfo gamma_ramp_host_visible_buffer_memory_allocate_info;
     // Prefer a host-uncached (because it's write-only) memory type, but try a
     // host-cached host-visible device-local one as well.
     if (xe::bit_scan_forward(
             gamma_ramp_host_visible_buffer_memory_types &
-                ~device_info.memory_types_host_cached,
+                ~vulkan_device->memory_types().host_cached,
             &(gamma_ramp_host_visible_buffer_memory_allocate_info
                   .memoryTypeIndex)) ||
         xe::bit_scan_forward(
@@ -513,7 +511,7 @@ bool VulkanCommandProcessor::SetupContext() {
           gamma_ramp_host_visible_buffer_memory_requirements.size;
       VkMemoryDedicatedAllocateInfo
           gamma_ramp_host_visible_buffer_memory_dedicated_allocate_info;
-      if (device_info.ext_1_1_VK_KHR_dedicated_allocation) {
+      if (vulkan_device->extensions().ext_1_1_KHR_dedicated_allocation) {
         gamma_ramp_host_visible_buffer_memory_allocate_info_last->pNext =
             &gamma_ramp_host_visible_buffer_memory_dedicated_allocate_info;
         gamma_ramp_host_visible_buffer_memory_allocate_info_last =
@@ -560,7 +558,7 @@ bool VulkanCommandProcessor::SetupContext() {
   if (gamma_ramp_buffer_ == VK_NULL_HANDLE) {
     // Create separate buffers for the shader and uploading.
     if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
-            provider, kGammaRampSize,
+            vulkan_device, kGammaRampSize,
             VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                 VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
             ui::vulkan::util::MemoryPurpose::kDeviceLocal, gamma_ramp_buffer_,
@@ -569,7 +567,7 @@ bool VulkanCommandProcessor::SetupContext() {
       return false;
     }
     if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
-            provider, kGammaRampSize * kMaxFramesInFlight,
+            vulkan_device, kGammaRampSize * kMaxFramesInFlight,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             ui::vulkan::util::MemoryPurpose::kUpload, gamma_ramp_upload_buffer_,
             gamma_ramp_upload_buffer_memory_, &gamma_ramp_upload_memory_type_,
@@ -859,11 +857,11 @@ bool VulkanCommandProcessor::SetupContext() {
   bool swap_apply_gamma_pixel_shaders_created =
       (swap_apply_gamma_pixel_shaders[kSwapApplyGammaPixelShader256EntryTable] =
            ui::vulkan::util::CreateShaderModule(
-               provider, shaders::apply_gamma_table_ps,
+               vulkan_device, shaders::apply_gamma_table_ps,
                sizeof(shaders::apply_gamma_table_ps))) != VK_NULL_HANDLE &&
       (swap_apply_gamma_pixel_shaders[kSwapApplyGammaPixelShaderPWL] =
            ui::vulkan::util::CreateShaderModule(
-               provider, shaders::apply_gamma_pwl_ps,
+               vulkan_device, shaders::apply_gamma_pwl_ps,
                sizeof(shaders::apply_gamma_pwl_ps))) != VK_NULL_HANDLE;
   if (!swap_apply_gamma_pixel_shaders_created) {
     XELOGE("Failed to create the gamma ramp application pixel shader modules");
@@ -884,7 +882,8 @@ bool VulkanCommandProcessor::SetupContext() {
   swap_apply_gamma_pipeline_stages[0].flags = 0;
   swap_apply_gamma_pipeline_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
   swap_apply_gamma_pipeline_stages[0].module =
-      ui::vulkan::util::CreateShaderModule(provider, shaders::fullscreen_cw_vs,
+      ui::vulkan::util::CreateShaderModule(vulkan_device,
+                                           shaders::fullscreen_cw_vs,
                                            sizeof(shaders::fullscreen_cw_vs));
   if (swap_apply_gamma_pipeline_stages[0].module == VK_NULL_HANDLE) {
     XELOGE("Failed to create the gamma ramp application vertex shader module");
@@ -962,7 +961,7 @@ bool VulkanCommandProcessor::SetupContext() {
   swap_apply_gamma_pipeline_color_blend_state.pAttachments =
       &swap_apply_gamma_pipeline_color_blend_attachment_state;
 
-  static const VkDynamicState kSwapApplyGammaPipelineDynamicStates[] = {
+  static constexpr VkDynamicState kSwapApplyGammaPipelineDynamicStates[] = {
       VK_DYNAMIC_STATE_VIEWPORT,
       VK_DYNAMIC_STATE_SCISSOR,
   };
@@ -1042,9 +1041,9 @@ bool VulkanCommandProcessor::SetupContext() {
 void VulkanCommandProcessor::ShutdownContext() {
   AwaitAllQueueOperationsCompletion();
 
-  const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-  VkDevice device = provider.device();
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
 
   DestroyScratchBuffer();
 
@@ -1304,9 +1303,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
             context);
         uint64_t guest_output_image_version = vulkan_context.image_version();
 
-        const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-        const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-        VkDevice device = provider.device();
+        const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+        const ui::vulkan::VulkanDevice::Functions& dfn =
+            vulkan_device->functions();
+        const VkDevice device = vulkan_device->device();
 
         uint32_t swap_frame_index =
             uint32_t(frame_current_ % kMaxFramesInFlight);
@@ -1373,7 +1373,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
           bool gamma_ramp_has_upload_buffer =
               gamma_ramp_upload_buffer_memory_ != VK_NULL_HANDLE;
           ui::vulkan::util::FlushMappedMemoryRange(
-              provider,
+              vulkan_device,
               gamma_ramp_has_upload_buffer ? gamma_ramp_upload_buffer_memory_
                                            : gamma_ramp_buffer_memory_,
               gamma_ramp_upload_memory_type_, gamma_ramp_upload_offset,
@@ -1831,9 +1831,9 @@ VkDescriptorSet VulkanCommandProcessor::AllocateSingleTransientDescriptor(
     descriptor_set = transient_descriptors_free.back();
     transient_descriptors_free.pop_back();
   } else {
-    const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-    const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-    VkDevice device = provider.device();
+    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+    const VkDevice device = vulkan_device->device();
     bool is_storage_buffer =
         transient_descriptor_layout ==
         SingleTransientDescriptorLayout::kStorageBufferCompute;
@@ -1878,9 +1878,9 @@ VkDescriptorSetLayout VulkanCommandProcessor::GetTextureDescriptorSetLayout(
     return it_existing->second;
   }
 
-  const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-  VkDevice device = provider.device();
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
 
   descriptor_set_layout_bindings_.clear();
   descriptor_set_layout_bindings_.reserve(binding_count);
@@ -1974,9 +1974,9 @@ VulkanCommandProcessor::GetPipelineLayout(size_t texture_count_pixel,
   descriptor_set_layouts[SpirvShaderTranslator::kDescriptorSetTexturesPixel] =
       descriptor_set_layout_textures_pixel;
 
-  const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-  VkDevice device = provider.device();
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
 
   VkPipelineLayoutCreateInfo pipeline_layout_create_info;
   pipeline_layout_create_info.sType =
@@ -2034,14 +2034,14 @@ VulkanCommandProcessor::AcquireScratchGpuBuffer(
 
   size = xe::align(size, kScratchBufferSizeIncrement);
 
-  const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
 
   VkDeviceMemory new_scratch_buffer_memory;
   VkBuffer new_scratch_buffer;
   // VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT for
   // texture loading.
   if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
-          provider, size,
+          vulkan_device, size,
           VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
           ui::vulkan::util::MemoryPurpose::kDeviceLocal, new_scratch_buffer,
           new_scratch_buffer_memory)) {
@@ -2052,8 +2052,8 @@ VulkanCommandProcessor::AcquireScratchGpuBuffer(
   }
 
   if (submission_completed_ >= scratch_buffer_last_usage_submission_) {
-    const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-    VkDevice device = provider.device();
+    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+    const VkDevice device = vulkan_device->device();
     if (scratch_buffer_ != VK_NULL_HANDLE) {
       dfn.vkDestroyBuffer(device, scratch_buffer_, nullptr);
     }
@@ -2168,20 +2168,20 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
                                        uint32_t index_count,
                                        IndexBufferInfo* index_buffer_info,
                                        bool major_mode_explicit) {
-#if XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   const RegisterFile& regs = *register_file_;
 
-  xenos::ModeControl edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
-  if (edram_mode == xenos::ModeControl::kCopy) {
+  xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
+  if (edram_mode == xenos::EdramMode::kCopy) {
     // Special copy handling.
     return IssueCopy();
   }
 
-  const ui::vulkan::VulkanProvider::DeviceInfo& device_info =
-      GetVulkanProvider().device_info();
+  const ui::vulkan::VulkanDevice::Properties& device_properties =
+      GetVulkanDevice()->properties();
 
   memexport_ranges_.clear();
 
@@ -2197,7 +2197,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // to a compute shader and dispatch it after the draw if the draw doesn't use
   // tessellation.
   if (vertex_shader->memexport_eM_written() != 0 &&
-      device_info.vertexPipelineStoresAndAtomics) {
+      device_properties.vertexPipelineStoresAndAtomics) {
     draw_util::AddMemExportRanges(regs, *vertex_shader, memexport_ranges_);
   }
 
@@ -2207,9 +2207,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       draw_util::IsRasterizationPotentiallyDone(regs, primitive_polygonal);
   VulkanShader* pixel_shader = nullptr;
   if (is_rasterization_done) {
-    // See xenos::ModeControl for explanation why the pixel shader is only used
+    // See xenos::EdramMode for explanation why the pixel shader is only used
     // when it's kColorDepth here.
-    if (edram_mode == xenos::ModeControl::kColorDepth) {
+    if (edram_mode == xenos::EdramMode::kColorDepth) {
       pixel_shader = static_cast<VulkanShader*>(active_pixel_shader());
       if (pixel_shader) {
         pipeline_cache_->AnalyzeShaderUcode(*pixel_shader);
@@ -2228,7 +2228,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     }
   }
   if (pixel_shader && pixel_shader->memexport_eM_written() != 0 &&
-      device_info.fragmentStoresAndAtomics) {
+      device_properties.fragmentStoresAndAtomics) {
     draw_util::AddMemExportRanges(regs, *pixel_shader, memexport_ranges_);
   }
 
@@ -2470,14 +2470,13 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // directly to pixel address and to things like ps_param_gen.
   draw_util::GetViewportInfoArgs gviargs{};
   gviargs.Setup(1, 1, divisors::MagicDiv{1}, divisors::MagicDiv{1}, false,
-                device_info.maxViewportDimensions[0],
-                device_info.maxViewportDimensions[1], true,
+                device_properties.maxViewportDimensions[0],
+                device_properties.maxViewportDimensions[1], true,
                 normalized_depth_control, false, host_render_targets_used,
                 pixel_shader && pixel_shader->writes_depth());
   gviargs.SetupRegisterValues(regs);
 
   draw_util::GetHostViewportInfo(&gviargs, viewport_info);
-
   // Update dynamic graphics pipeline state.
   UpdateDynamicState(viewport_info, primitive_polygonal,
                      normalized_depth_control);
@@ -2488,7 +2487,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // indirectly in the vertex shader if full 32-bit indices are not supported by
   // the host.
   bool shader_32bit_index_dma =
-      !device_info.fullDrawIndexUint32 &&
+      !device_properties.fullDrawIndexUint32 &&
       primitive_processing_result.index_buffer_type ==
           PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA &&
       vgt_draw_initiator.index_size == xenos::IndexFormat::kInt32 &&
@@ -2639,9 +2638,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
 }
 
 bool VulkanCommandProcessor::IssueCopy() {
-#if XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   if (!BeginSubmission(true)) {
     return false;
@@ -2692,9 +2691,9 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(
     await_submission = GetCurrentSubmission() - 1;
   }
 
-  const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-  VkDevice device = provider.device();
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
 
   size_t fences_total = submissions_in_flight_fences_.size();
   size_t fences_awaited = 0;
@@ -2807,9 +2806,9 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(
 }
 
 bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
-#if XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   if (device_lost_) {
     return false;
@@ -2955,9 +2954,9 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
 }
 
 bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
-  ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-  VkDevice device = provider.device();
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
 
   // Make sure everything needed for submitting exist.
   if (submission_open_) {
@@ -2997,7 +2996,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       command_pool_create_info.pNext = nullptr;
       command_pool_create_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
       command_pool_create_info.queueFamilyIndex =
-          provider.queue_family_graphics_compute();
+          vulkan_device->queue_family_graphics_compute();
       if (dfn.vkCreateCommandPool(device, &command_pool_create_info, nullptr,
                                   &command_buffer.pool) != VK_SUCCESS) {
         XELOGE("Failed to create a Vulkan command pool");
@@ -3073,10 +3072,11 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       bind_sparse_info.pSignalSemaphores = &bind_sparse_semaphore;
       VkResult bind_sparse_result;
       {
-        ui::vulkan::VulkanProvider::QueueAcquisition queue_acquisition(
-            provider.AcquireQueue(provider.queue_family_sparse_binding(), 0));
+        ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
+            vulkan_device->AcquireQueue(
+                vulkan_device->queue_family_sparse_binding(), 0);
         bind_sparse_result = dfn.vkQueueBindSparse(
-            queue_acquisition.queue, 1, &bind_sparse_info, VK_NULL_HANDLE);
+            queue_acquisition.queue(), 1, &bind_sparse_info, VK_NULL_HANDLE);
       }
       if (bind_sparse_result != VK_SUCCESS) {
         XELOGE("Failed to submit Vulkan sparse binds");
@@ -3143,10 +3143,11 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     }
     VkResult submit_result;
     {
-      ui::vulkan::VulkanProvider::QueueAcquisition queue_acquisition(
-          provider.AcquireQueue(provider.queue_family_graphics_compute(), 0));
+      ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
+          vulkan_device->AcquireQueue(
+              vulkan_device->queue_family_graphics_compute(), 0);
       submit_result =
-          dfn.vkQueueSubmit(queue_acquisition.queue, 1, &submit_info, fence);
+          dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence);
     }
     if (submit_result != VK_SUCCESS) {
       XELOGE("Failed to submit a Vulkan command buffer");
@@ -3259,9 +3260,9 @@ void VulkanCommandProcessor::SplitPendingBarrier() {
 void VulkanCommandProcessor::DestroyScratchBuffer() {
   assert_false(scratch_buffer_used_);
 
-  const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-  VkDevice device = provider.device();
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
 
   scratch_buffer_last_usage_submission_ = 0;
   scratch_buffer_last_access_mask_ = 0;
@@ -3276,9 +3277,9 @@ void VulkanCommandProcessor::DestroyScratchBuffer() {
 void VulkanCommandProcessor::UpdateDynamicState(
     const draw_util::ViewportInfo& viewport_info, bool primitive_polygonal,
     reg::RB_DEPTHCONTROL normalized_depth_control) {
-#if XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   const RegisterFile& regs = *register_file_;
 
@@ -3382,7 +3383,7 @@ void VulkanCommandProcessor::UpdateDynamicState(
     if (normalized_depth_control.stencil_enable) {
       Register stencil_ref_mask_front_reg, stencil_ref_mask_back_reg;
       if (primitive_polygonal && normalized_depth_control.backface_enable) {
-        if (GetVulkanProvider().device_info().separateStencilMaskRef) {
+        if (GetVulkanDevice()->properties().separateStencilMaskRef) {
           stencil_ref_mask_front_reg = XE_GPU_REG_RB_STENCILREFMASK;
           stencil_ref_mask_back_reg = XE_GPU_REG_RB_STENCILREFMASK_BF;
         } else {
@@ -3499,9 +3500,9 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
     bool shader_32bit_index_dma, const draw_util::ViewportInfo& viewport_info,
     uint32_t used_texture_mask, reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask) {
-#if XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   const RegisterFile& regs = *register_file_;
   auto pa_cl_vte_cntl = regs.Get<reg::PA_CL_VTE_CNTL>();
@@ -3743,7 +3744,7 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
   }
 
   // Texture host swizzle in the shader.
-  if (!GetVulkanProvider().device_info().imageViewFormatSwizzle) {
+  if (!GetVulkanDevice()->properties().imageViewFormatSwizzle) {
     uint32_t textures_remaining = used_texture_mask;
     uint32_t texture_index;
     while (xe::bit_scan_forward(textures_remaining, &texture_index)) {
@@ -3959,15 +3960,15 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
 
 bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
                                             const VulkanShader* pixel_shader) {
-#if XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_UI_VULKAN_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
 
   const RegisterFile& regs = *register_file_;
 
-  const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-  VkDevice device = provider.device();
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
 
   // Invalidate constant buffers and descriptors for changed data.
 
@@ -4026,7 +4027,7 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
     current_graphics_descriptor_set_values_up_to_date_ &=
         ~(UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetConstants);
     size_t uniform_buffer_alignment =
-        size_t(provider.device_info().minUniformBufferOffsetAlignment);
+        size_t(vulkan_device->properties().minUniformBufferOffsetAlignment);
     // System constants.
     if (!(current_constant_buffers_up_to_date_ &
           (UINT32_C(1) << SpirvShaderTranslator::kConstantBufferSystem))) {
@@ -4400,10 +4401,9 @@ uint8_t* VulkanCommandProcessor::WriteTransientUniformBufferBinding(
   if (descriptor_set == VK_NULL_HANDLE) {
     return nullptr;
   }
-  const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
   uint8_t* mapping = uniform_buffer_pool_->Request(
       frame_current_, size,
-      size_t(provider.device_info().minUniformBufferOffsetAlignment),
+      size_t(GetVulkanDevice()->properties().minUniformBufferOffsetAlignment),
       descriptor_buffer_info_out.buffer, descriptor_buffer_info_out.offset);
   if (!mapping) {
     return nullptr;
@@ -4433,9 +4433,9 @@ uint8_t* VulkanCommandProcessor::WriteTransientUniformBufferBinding(
   if (!mapping) {
     return nullptr;
   }
-  const ui::vulkan::VulkanProvider& provider = GetVulkanProvider();
-  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
-  VkDevice device = provider.device();
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
   dfn.vkUpdateDescriptorSets(device, 1, &write_descriptor_set, 0, nullptr);
   descriptor_set_out = write_descriptor_set.dstSet;
   return mapping;

@@ -8,9 +8,6 @@
  */
 
 #include "xenia/base/logging.h"
-#include "xenia/base/memory.h"
-#include "xenia/base/mutex.h"
-#include "xenia/cpu/processor.h"
 #include "xenia/kernel/info/file.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
@@ -29,14 +26,14 @@ namespace xboxkrnl {
 
 struct CreateOptions {
   // https://processhacker.sourceforge.io/doc/ntioapi_8h.html
-  static const uint32_t FILE_DIRECTORY_FILE = 0x00000001;
+  static constexpr uint32_t FILE_DIRECTORY_FILE = 0x00000001;
   // Optimization - files access will be sequential, not random.
-  static const uint32_t FILE_SEQUENTIAL_ONLY = 0x00000004;
-  static const uint32_t FILE_SYNCHRONOUS_IO_ALERT = 0x00000010;
-  static const uint32_t FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020;
-  static const uint32_t FILE_NON_DIRECTORY_FILE = 0x00000040;
+  static constexpr uint32_t FILE_SEQUENTIAL_ONLY = 0x00000004;
+  static constexpr uint32_t FILE_SYNCHRONOUS_IO_ALERT = 0x00000010;
+  static constexpr uint32_t FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020;
+  static constexpr uint32_t FILE_NON_DIRECTORY_FILE = 0x00000040;
   // Optimization - file access will be random, not sequential.
-  static const uint32_t FILE_RANDOM_ACCESS = 0x00000800;
+  static constexpr uint32_t FILE_RANDOM_ACCESS = 0x00000800;
 };
 
 dword_result_t NtCreateFile_entry(lpdword_t handle_out, dword_t desired_access,
@@ -160,7 +157,7 @@ dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
       // though were are completing immediately.
       // Low bit probably means do not queue to IO ports.
       if ((uint32_t)apc_routine_ptr & ~1) {
-        if (apc_context) {
+        if (apc_context && result == X_STATUS_SUCCESS) {
           auto thread = XThread::GetCurrentThread();
           thread->EnqueueApc(static_cast<uint32_t>(apc_routine_ptr) & ~1u,
                              apc_context, io_status_block, 0);
@@ -625,7 +622,7 @@ dword_result_t NtDeviceIoControlFile_entry(
   // Called by XMountUtilityDrive cache-mounting code
   // (checks if the returned values look valid, values below seem to pass the
   // checks)
-  const uint32_t cache_size = 0xFF000;
+  constexpr uint32_t cache_size = 0xFF000;
 
   if (io_control_code == X_IOCTL_DISK_GET_DRIVE_GEOMETRY) {
     if (output_buffer_len < 0x8) {

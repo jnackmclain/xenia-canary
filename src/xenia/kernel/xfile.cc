@@ -11,12 +11,7 @@
 #include "xenia/vfs/virtual_file_system.h"
 
 #include "xenia/base/byte_stream.h"
-#include "xenia/base/logging.h"
-#include "xenia/base/math.h"
-#include "xenia/base/mutex.h"
 #include "xenia/kernel/kernel_state.h"
-#include "xenia/kernel/xevent.h"
-#include "xenia/memory.h"
 
 namespace xe {
 namespace kernel {
@@ -143,17 +138,23 @@ X_STATUS XFile::Read(uint32_t buffer_guest_address, uint32_t buffer_length,
           result = X_STATUS_ACCESS_VIOLATION;
         } else {
           result = file_->ReadSync(
-              buffer_physical_heap
-                  ? memory()->TranslatePhysical(
-                        buffer_physical_heap->GetPhysicalAddress(
-                            buffer_guest_address))
-                  : memory()->TranslateVirtual(buffer_guest_address),
-              buffer_length, size_t(byte_offset), &bytes_read);
+              std::span<uint8_t>(
+                  buffer_physical_heap
+                      ? memory()->TranslatePhysical(
+                            buffer_physical_heap->GetPhysicalAddress(
+                                buffer_guest_address))
+                      : memory()->TranslateVirtual(buffer_guest_address),
+                  buffer_length),
+              size_t(byte_offset), &bytes_read);
           if (XSUCCEEDED(result)) {
             if (buffer_physical_heap) {
               buffer_physical_heap->TriggerCallbacks(
                   xe::global_critical_region::AcquireDirect(),
                   buffer_guest_address, buffer_length, true, true);
+            }
+
+            if (byte_offset) {
+              position_ = byte_offset;
             }
             position_ += bytes_read;
           }
@@ -245,9 +246,10 @@ X_STATUS XFile::Write(uint32_t buffer_guest_address, uint32_t buffer_length,
   }
 
   size_t bytes_written = 0;
-  X_STATUS result =
-      file_->WriteSync(memory()->TranslateVirtual(buffer_guest_address),
-                       buffer_length, size_t(byte_offset), &bytes_written);
+  X_STATUS result = file_->WriteSync(
+      std::span<uint8_t>(memory()->TranslateVirtual(buffer_guest_address),
+                         buffer_length),
+      size_t(byte_offset), &bytes_written);
   if (XSUCCEEDED(result)) {
     position_ += bytes_written;
   }
@@ -293,8 +295,8 @@ void XFile::RemoveIOCompletionPort(uint32_t key) {
 }
 
 bool XFile::Save(ByteStream* stream) {
-  XELOGD("XFile {:08X} ({})", handle(),
-         file_->entry()->absolute_path().c_str());
+  // XELOGD("XFile {:08X} ({})", handle(),
+  //        file_->entry()->absolute_path().c_str());
 
   if (!SaveObject(stream)) {
     return false;
@@ -325,7 +327,7 @@ object_ref<XFile> XFile::Restore(KernelState* kernel_state,
   auto is_directory = stream->Read<bool>();
   auto is_synchronous = stream->Read<bool>();
 
-  XELOGD("XFile {:08X} ({})", file->handle(), abs_path);
+  // XELOGD("XFile {:08X} ({})", file->handle(), abs_path);
 
   vfs::File* vfs_file = nullptr;
   vfs::FileAction action;
@@ -333,7 +335,7 @@ object_ref<XFile> XFile::Restore(KernelState* kernel_state,
       nullptr, abs_path, vfs::FileDisposition::kOpen, access, is_directory,
       false, &vfs_file, &action);
   if (XFAILED(res)) {
-    XELOGE("Failed to open XFile: error {:08X}", res);
+    // XELOGE("Failed to open XFile: error {:08X}", res);
     return object_ref<XFile>(file);
   }
 

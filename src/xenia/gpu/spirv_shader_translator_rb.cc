@@ -10,8 +10,6 @@
 #include "xenia/gpu/spirv_shader_translator.h"
 
 #include <cstdint>
-#include <memory>
-#include <utility>
 
 #include "third_party/glslang/SPIRV/GLSL.std.450.h"
 #include "xenia/base/assert.h"
@@ -566,7 +564,7 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
       spv::Id alpha_test_result_non_not_equal;
       {
         // Function other than "not equal".
-        static const spv::Op kAlphaTestOps[] = {
+        static constexpr spv::Op kAlphaTestOps[] = {
             spv::OpFOrdLessThan, spv::OpFOrdEqual, spv::OpFOrdGreaterThan};
         for (uint32_t i = 0; i < 3; ++i) {
           spv::Id alpha_test_comparison_result = builder_->createBinOp(

@@ -14,7 +14,6 @@
 #include <string>
 #include <type_traits>
 
-#include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/byte_order.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
@@ -632,11 +631,10 @@ using xe::cpu::ExportTag;
                    xe::kernel::shim::KernelModuleId::module_name,          \
                    ordinals::name>(&name##_entry))>>;                      \
   const auto EXPORT_##module_name##_##name = RegisterExport_##module_name( \
-      _register_##module_name##_##name ::RegisterExport<                   \
-          &name##_entry, tags | (static_cast<xe::cpu::ExportTag::type>(    \
-                                     xe::cpu::ExportCategory::category)    \
-                                 << xe::cpu::ExportTag::CategoryShift)>(   \
-          #name));
+      _register_##module_name##_##name ::RegisterExport < &name##_entry,   \
+      tags | (static_cast<xe::cpu::ExportTag::type>(                       \
+                  xe::cpu::ExportCategory::category)                       \
+              << xe::cpu::ExportTag::CategoryShift) > (#name));
 
 #define DECLARE_EMPTY_REGISTER_EXPORTS(module_name, group_name) \
   void xe::kernel::module_name::Register##group_name##Exports(  \

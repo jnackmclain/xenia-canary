@@ -20,6 +20,7 @@
 #include "xenia/base/mutex.h"
 #include "xenia/base/string_key.h"
 #include "xenia/base/string_util.h"
+#include "xenia/vfs/entry.h"
 #include "xenia/xbox.h"
 
 namespace xe {
@@ -151,6 +152,10 @@ class ContentManager {
       const uint32_t device_id, const uint64_t xuid, const uint32_t title_id,
       const XContentType content_type) const;
 
+  std::vector<XCONTENT_AGGREGATE_DATA> ListContentODD(
+      const uint32_t device_id, const uint64_t xuid, const uint32_t title_id,
+      const XContentType content_type) const;
+
   std::unique_ptr<ContentPackage> ResolvePackage(
       const std::string_view root_name, const uint64_t xuid,
       const XCONTENT_AGGREGATE_DATA& data, const uint32_t disc_number = -1);
@@ -181,6 +186,9 @@ class ContentManager {
   bool IsContentOpen(const XCONTENT_AGGREGATE_DATA& data) const;
   void CloseOpenedFilesFromContent(const std::string_view root_name);
 
+  uint64_t GetContentTotalSpace() const;
+  uint64_t GetContentFreeSpace() const;
+
  private:
   std::filesystem::path ResolvePackageRoot(
       const uint64_t xuid, const uint32_t title_id,
@@ -196,12 +204,14 @@ class ContentManager {
       const uint64_t xuid,
       uint32_t base_title_id = kCurrentlyRunningTitleId) const;
 
+  bool UpdateSpaData(vfs::Entry* spa_file_update);
+
   KernelState* kernel_state_;
   std::filesystem::path root_path_;
 
   // TODO(benvanik): remove use of global lock, it's bad here!
   xe::global_critical_region global_critical_region_;
-  std::unordered_map<string_key, ContentPackage*> open_packages_;
+  std::unordered_map<string_key_insensitive, ContentPackage*> open_packages_;
 };
 
 }  // namespace xam

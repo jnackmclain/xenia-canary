@@ -9,7 +9,6 @@
 
 #include "xenia/cpu/hir/hir_builder.h"
 
-#include <cinttypes>
 #include <cstdarg>
 #include <cstring>
 
@@ -2100,7 +2099,7 @@ Value* HIRBuilder::CountLeadingZeros(Value* value) {
   ASSERT_INTEGER_TYPE(value);
 
   if (value->IsConstantZero()) {
-    static const uint8_t zeros[] = {
+    static constexpr uint8_t zeros[] = {
         8,
         16,
         32,

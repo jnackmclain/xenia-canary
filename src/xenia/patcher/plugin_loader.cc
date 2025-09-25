@@ -6,13 +6,11 @@
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
-#include <string>
-
+#include "xenia/patcher/plugin_loader.h"
 #include "xenia/base/logging.h"
 #include "xenia/config.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xthread.h"
-#include "xenia/patcher/plugin_loader.h"
 #include "xenia/vfs/devices/host_path_device.h"
 
 DEFINE_bool(
@@ -174,13 +172,18 @@ bool PluginLoader::IsAnyPluginForTitleAvailable(
   return result != plugin_configs_.cend();
 }
 
-void PluginLoader::LoadTitlePlugins(const uint32_t title_id) {
+void PluginLoader::LoadTitlePlugins(const uint32_t title_id,
+                                    const uint64_t module_hash) {
   std::vector<PluginInfoEntry> title_plugins;
 
   std::copy_if(plugin_configs_.cbegin(), plugin_configs_.cend(),
                std::back_inserter(title_plugins),
-               [title_id](const PluginInfoEntry& entry) {
-                 return entry.is_enabled && entry.title_id == title_id;
+               [title_id, module_hash](const PluginInfoEntry& entry) {
+                 const auto hash_exists =
+                     std::find(entry.hashes.cbegin(), entry.hashes.cend(),
+                               module_hash) != entry.hashes.cend();
+                 return entry.is_enabled && entry.title_id == title_id &&
+                        hash_exists;
                });
 
   if (title_plugins.empty()) {
@@ -230,7 +233,7 @@ void PluginLoader::LoadTitlePlugin(const PluginInfoEntry& entry) {
 }
 
 void PluginLoader::CreatePluginDevice(const uint32_t title_id) {
-  const std::string mount_plugins = "\\Device\\Plugins";
+  constexpr std::string_view mount_plugins = "\\Device\\Plugins";
 
   const std::filesystem::path plugins_host_path =
       plugins_root_ / fmt::format("{:08X}", title_id);

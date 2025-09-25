@@ -40,8 +40,9 @@ void XamResetInactivity_entry() {
 }
 DECLARE_XAM_EXPORT1(XamResetInactivity, kInput, kStub);
 
-dword_result_t XamEnableInactivityProcessing_entry(dword_t unk,
+dword_result_t XamEnableInactivityProcessing_entry(dword_t inactivity_index,
                                                    dword_t enable) {
+  // Enables/disables screen saver and auto shutoff
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamEnableInactivityProcessing, kInput, kStub);
@@ -174,6 +175,8 @@ dword_result_t XamInputGetKeystrokeEx_entry(
     return X_ERROR_BAD_ARGUMENTS;
   }
 
+  keystroke.Zero();
+
   uint32_t user_index = *user_index_ptr;
   auto input_system = kernel_state()->emulator()->input_system();
   auto lock = input_system->lock();
@@ -207,10 +210,9 @@ dword_result_t XamInputGetKeystrokeEx_entry(
 }
 DECLARE_XAM_EXPORT1(XamInputGetKeystrokeEx, kInput, kImplemented);
 
-X_HRESULT_result_t XamUserGetDeviceContext_entry(
-    dword_t user_index,
-    dword_t unk,  // It's set to 3 for a big button
-    lpdword_t out_ptr) {
+X_HRESULT_result_t XamUserGetDeviceContext_entry(dword_t user_index,
+                                                 dword_t device_type,
+                                                 lpdword_t out_ptr) {
   // Games check the result - usually with some masking.
   // If this function fails they assume zero, so let's fail AND
   // set zero just to be safe.
@@ -224,6 +226,44 @@ X_HRESULT_result_t XamUserGetDeviceContext_entry(
   }
 }
 DECLARE_XAM_EXPORT1(XamUserGetDeviceContext, kInput, kStub);
+
+X_HRESULT_result_t XamInputNonControllerGetRaw_entry(
+    lpdword_t state_ptr, lpdword_t buffer_length_ptr, lpdword_t buffer_ptr) {
+  if (!state_ptr || !buffer_length_ptr || !buffer_ptr) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  const uint32_t data_size = *buffer_length_ptr;
+
+  if (data_size == 0 || data_size > 0x20) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  auto input_system = kernel_state()->emulator()->input_system();
+
+  std::vector<uint8_t> data(data_size, 0);
+  const auto result = input_system->GetSkylanderPortal()->read(data);
+  *state_ptr = 1;
+  memcpy(buffer_ptr, data.data(), data.size());
+
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamInputNonControllerGetRaw, kInput, kStub);
+
+X_HRESULT_result_t XamInputNonControllerSetRaw_entry(dword_t buffer_length,
+                                                     lpdword_t buffer_ptr) {
+  if (!buffer_ptr || !buffer_length || buffer_length > 0x20) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  auto input_system = kernel_state()->emulator()->input_system();
+
+  std::vector<uint8_t> data(buffer_length, 0);
+  memcpy(data.data(), buffer_ptr, buffer_length);
+
+  return input_system->GetSkylanderPortal()->write(data);
+}
+DECLARE_XAM_EXPORT1(XamInputNonControllerSetRaw, kInput, kStub);
 
 }  // namespace xam
 }  // namespace kernel
